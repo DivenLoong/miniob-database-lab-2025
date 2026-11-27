@@ -172,6 +172,30 @@ RC MvccTrx::delete_record(Table *table, Record &record)
   return RC::SUCCESS;
 }
 
+RC MvccTrx::update_record(Table *table, Record &old_record, Record &new_record)
+{
+  RC rc = delete_record(table, old_record);
+  if (OB_FAIL(rc)) {
+    return rc;
+  }
+  rc = insert_record(table, new_record);
+  if (OB_FAIL(rc)) {
+    Field begin;
+    Field end;
+    trx_fields(table, begin, end);
+    const RC restore = table->visit_record(old_record.rid(), [&](Record &record) {
+      end.set_int(record, trx_kit_.max_trx_id());
+      return true;
+    });
+    if (OB_SUCC(restore)) {
+      operations_.pop_back();
+    } else {
+      LOG_ERROR("failed to restore the old row version: %s", strrc(restore));
+    }
+  }
+  return rc;
+}
+
 RC MvccTrx::visit_record(Table *table, Record &record, ReadWriteMode mode)
 {
   Field begin_field;
@@ -183,15 +207,16 @@ RC MvccTrx::visit_record(Table *table, Record &record, ReadWriteMode mode)
 
   RC rc = RC::SUCCESS;
   if (begin_xid > 0 && end_xid > 0) {
-    if (trx_id_ >= begin_xid && trx_id_ <= end_xid) {
-      rc = RC::SUCCESS;
+    if (trx_id_ >= begin_xid && trx_id_ < end_xid) {
+      rc = mode == ReadWriteMode::READ_WRITE && end_xid != trx_kit_.max_trx_id() ?
+          RC::LOCKED_CONCURRENCY_CONFLICT : RC::SUCCESS;
     } else {
       LOG_TRACE("record invisible. trx id=%d, begin xid=%d, end xid=%d", trx_id_, begin_xid, end_xid);
       rc = RC::RECORD_INVISIBLE;
     }
   } else if (begin_xid < 0) {
     // begin xid 小于0说明是刚插入而且没有提交的数据
-    if (-begin_xid == trx_id_) {
+    if (-begin_xid == trx_id_ && -end_xid != trx_id_) {
       rc = RC::SUCCESS;
     } else {
       LOG_TRACE("record invisible. someone is updating this record right now. trx id=%d, begin xid=%d, end xid=%d",
@@ -344,22 +369,18 @@ RC MvccTrx::rollback()
         Table *table = operation.table();
         // 这里也可以不删除，仅仅给数据加个标识位，等垃圾回收器来收割也行
         Record record;
-        record.set_rid(rid);
+        rc = table->get_record(rid, record);
+        if (RC::RECORD_NOT_EXIST == rc && recovering_) {
+          continue;
+        }
+        if (OB_FAIL(rc)) {
+          return rc;
+        }
         if (recovering_) {
-          // 恢复的时候，需要额外判断下当前记录是否还是当前事务拥有。是的话才能删除记录
-          rc = table->get_record(rid, record);
-          if (OB_SUCC(rc)) {
-            Field begin_xid_field, end_xid_field;
-            trx_fields(table, begin_xid_field, end_xid_field);
-            if (begin_xid_field.get_int(record) != -trx_id_) {
-              continue;
-            }
-          } else if (RC::RECORD_NOT_EXIST == rc) {
+          Field begin_xid_field, end_xid_field;
+          trx_fields(table, begin_xid_field, end_xid_field);
+          if (begin_xid_field.get_int(record) != -trx_id_) {
             continue;
-          } else {
-            LOG_WARN("failed to get record while rollback. table=%s, rid=%s, rc=%s", 
-                     table->name(), rid.to_string().c_str(), strrc(rc));
-            return rc;
           }
         }
         rc = table->delete_record(record);

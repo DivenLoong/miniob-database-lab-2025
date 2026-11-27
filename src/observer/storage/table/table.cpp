@@ -37,6 +37,7 @@ See the Mulan PSL v2 for more details. */
 
 Table::~Table()
 {
+  engine_.reset();
   if (lob_handler_ != nullptr) {
     delete lob_handler_;
     lob_handler_ = nullptr;
@@ -64,6 +65,14 @@ RC Table::create(Db *db, int32_t table_id, const char *path, const char *name, c
 
   RC rc = RC::SUCCESS;
 
+  // 创建文件
+  const vector<FieldMeta> *trx_fields = db->trx_kit().trx_fields();
+  if ((rc = table_meta_.init(table_id, name, trx_fields, attributes, primary_keys, storage_format, storage_engine)) != RC::SUCCESS) {
+    LOG_ERROR("Failed to init table meta. name:%s, ret:%d", name, rc);
+    return rc;
+  }
+
+
   // 使用 table_name.table记录一个表的元数据
   // 判断表文件是否已经存在
   int fd = ::open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
@@ -78,12 +87,6 @@ RC Table::create(Db *db, int32_t table_id, const char *path, const char *name, c
 
   close(fd);
 
-  // 创建文件
-  const vector<FieldMeta> *trx_fields = db->trx_kit().trx_fields();
-  if ((rc = table_meta_.init(table_id, name, trx_fields, attributes, primary_keys, storage_format, storage_engine)) != RC::SUCCESS) {
-    LOG_ERROR("Failed to init table meta. name:%s, ret:%d", name, rc);
-    return rc;  // delete table file
-  }
 
   fstream fs;
   fs.open(path, ios_base::out | ios_base::binary);
@@ -98,6 +101,10 @@ RC Table::create(Db *db, int32_t table_id, const char *path, const char *name, c
 
   db_       = db;
 
+  rc = init_lob(base_dir, true);
+  if (OB_FAIL(rc)) {
+    return rc;
+  }
   string             data_file = table_data_file(base_dir, name);
   BufferPoolManager &bpm       = db->buffer_pool_manager();
   rc                           = bpm.create_file(data_file.c_str());
@@ -151,7 +158,10 @@ RC Table::open(Db *db, const char *meta_file, const char *base_dir)
   //   // don't need to remove the data_file
   //   return rc;
   // }
-  RC rc = RC::SUCCESS;
+  RC rc = init_lob(base_dir, false);
+  if (OB_FAIL(rc)) {
+    return rc;
+  }
 
   if (table_meta_.storage_engine() == StorageEngine::HEAP) {
     engine_ = make_unique<HeapTableEngine>(&table_meta_, db_, this);
@@ -170,6 +180,29 @@ RC Table::open(Db *db, const char *meta_file, const char *base_dir)
   }
 
   return rc;
+}
+
+RC Table::init_view_schema(Db *db, const string &name, const vector<AttrInfoSqlNode> &attributes)
+{
+  db_ = db;
+  return table_meta_.init(0, name.c_str(), nullptr, attributes, {}, StorageFormat::ROW_FORMAT, StorageEngine::HEAP);
+}
+
+RC Table::init_lob(const char *directory, bool create)
+{
+  for (int i = table_meta_.sys_field_num(); i < table_meta_.field_num(); ++i) {
+    const AttrType type = table_meta_.field(i)->type();
+    if (type == AttrType::TEXTS || type == AttrType::VECTORS) {
+      const string filename = table_lob_file(directory, name());
+      auto lob = make_unique<LobFileHandler>();
+      RC rc = create ? lob->create_file(filename.c_str()) : lob->open_file(filename.c_str());
+      if (OB_SUCC(rc)) {
+        lob_handler_ = lob.release();
+      }
+      return rc;
+    }
+  }
+  return RC::SUCCESS;
 }
 
 RC Table::insert_record(Record &record)
@@ -228,7 +261,8 @@ RC Table::make_record(int value_num, const Value *values, Record &record)
   for (int i = 0; i < value_num && OB_SUCC(rc); i++) {
     const FieldMeta *field = table_meta_.field(i + normal_field_start_index);
     const Value &    value = values[i];
-    if (!value.is_null() && field->type() != value.attr_type()) {
+    if (!value.is_null() && field->type() != value.attr_type() &&
+        !(field->type() == AttrType::TEXTS && value.attr_type() == AttrType::CHARS)) {
       Value real_value;
       rc = Value::cast_to(value, field->type(), real_value);
       if (OB_FAIL(rc)) {
@@ -261,6 +295,30 @@ RC Table::set_value_to_record(char *record_data, const Value &value, const Field
     memset(record_data + field->offset(), 0, field->len());
     return RC::SUCCESS;
   }
+  if (field->type() == AttrType::TEXTS || field->type() == AttrType::VECTORS) {
+    const int64_t length = value.length();
+    if (field->type() == AttrType::TEXTS && (value.attr_type() != AttrType::CHARS || length > 65535)) {
+      return RC::SCHEMA_FIELD_TYPE_MISMATCH;
+    }
+    if (field->type() == AttrType::VECTORS && (value.attr_type() != AttrType::VECTORS ||
+        length == 0 || length > static_cast<int64_t>(field->vector_dimension() * sizeof(float)))) {
+      return RC::SCHEMA_FIELD_TYPE_MISMATCH;
+    }
+    if (lob_handler_ == nullptr) {
+      return RC::INTERNAL;
+    }
+    int64_t reference[2] = {0, length};
+    if (length > 0) {
+      RC rc = lob_handler_->insert_data(reference[0], length, value.data());
+      if (OB_FAIL(rc)) {
+        return rc;
+      }
+    }
+    field->write_null(record_data, false);
+    memcpy(record_data + field->offset(), reference, sizeof(reference));
+    return RC::SUCCESS;
+  }
+
   size_t       copy_len = field->len();
   const size_t data_len = value.length();
   if (field->type() == AttrType::CHARS) {
@@ -280,6 +338,38 @@ RC Table::set_value_to_record(char *record_data, const Value &value, const Field
   return RC::SUCCESS;
 }
 
+RC Table::read_value(const FieldMeta &field, const char *record, Value &value) const
+{
+  value.reset();
+  if (field.is_null(record)) {
+    value.set_null();
+    return RC::SUCCESS;
+  }
+
+  if (field.type() == AttrType::TEXTS || field.type() == AttrType::VECTORS) {
+    int64_t reference[2];
+    memcpy(reference, record + field.offset(), sizeof(reference));
+    const int64_t limit = field.type() == AttrType::TEXTS ? 65535 :
+        static_cast<int64_t>(field.vector_dimension()) * sizeof(float);
+    if (reference[0] < 0 || reference[1] < 0 || reference[1] > limit || lob_handler_ == nullptr) {
+      return RC::IOERR_READ;
+    }
+    string payload(reference[1], '\0');
+    if (!payload.empty()) {
+      RC rc = lob_handler_->get_data(reference[0], reference[1], payload.data());
+      if (OB_FAIL(rc)) {
+        return rc;
+      }
+    }
+    value.set_type(field.type() == AttrType::TEXTS ? AttrType::CHARS : AttrType::VECTORS);
+    value.set_data(payload.data(), payload.size());
+    return RC::SUCCESS;
+  }
+  value.set_type(field.type());
+  value.set_data(record + field.offset(), field.len());
+  return RC::SUCCESS;
+}
+
 RC Table::get_record_scanner(RecordScanner *&scanner, Trx *trx, ReadWriteMode mode)
 {
   return engine_->get_record_scanner(scanner, trx, mode);
@@ -290,9 +380,14 @@ RC Table::get_chunk_scanner(ChunkFileScanner &scanner, Trx *trx, ReadWriteMode m
   return engine_->get_chunk_scanner(scanner, trx, mode);
 }
 
-RC Table::create_index(Trx *trx, const FieldMeta *field_meta, const char *index_name)
+RC Table::create_index(Trx *trx, const vector<const FieldMeta *> &fields, const char *index_name, bool unique, bool full_text)
 {
-  return engine_->create_index(trx, field_meta, index_name);
+  return engine_->create_index(trx, fields, index_name, unique, full_text);
+}
+
+RC Table::drop_index(const char *name)
+{
+  return engine_->drop_index(name);
 }
 
 RC Table::update_record(const Record &original, const Record &changed)
@@ -309,6 +404,17 @@ Index *Table::find_index(const char *index_name) const
 {
   return engine_->find_index(index_name);
 }
+Index *Table::find_full_text(const char *field_name) const
+{
+  for (int i = 0; i < table_meta_.index_num(); ++i) {
+    const IndexMeta *meta = table_meta_.index(i);
+    if (meta->full_text() && strcmp(meta->field(), field_name) == 0) {
+      return find_index(meta->name());
+    }
+  }
+  return nullptr;
+}
+
 Index *Table::find_index_by_field(const char *field_name) const
 {
   return engine_->find_index_by_field(field_name);

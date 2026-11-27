@@ -168,6 +168,7 @@ public:
   }
 
   void set_record(Record *record) { this->record_ = record; }
+  void set_qualifier(const string &qualifier) { qualifier_ = qualifier; }
 
   void set_schema(const Table *table, const vector<FieldMeta> *fields)
   {
@@ -195,20 +196,13 @@ public:
 
     FieldExpr       *field_expr = speces_[index];
     const FieldMeta *field_meta = field_expr->field().meta();
-    cell.reset();
-    if (field_meta->is_null(record_->data())) {
-      cell.set_null();
-      return RC::SUCCESS;
-    }
-    cell.set_type(field_meta->type());
-    cell.set_data(this->record_->data() + field_meta->offset(), field_meta->len());
-    return RC::SUCCESS;
+    return table_->read_value(*field_meta, record_->data(), cell);
   }
 
   RC spec_at(int index, TupleCellSpec &spec) const override
   {
     const Field &field = speces_[index]->field();
-    spec               = TupleCellSpec(table_->name(), field.field_name());
+    spec = TupleCellSpec(qualifier_.empty() ? table_->name() : qualifier_.c_str(), field.field_name());
     return RC::SUCCESS;
   }
 
@@ -216,7 +210,7 @@ public:
   {
     const char *table_name = spec.table_name();
     const char *field_name = spec.field_name();
-    if (0 != strcmp(table_name, table_->name())) {
+    if (0 != strcasecmp(table_name, qualifier_.empty() ? table_->name() : qualifier_.c_str())) {
       return RC::NOTFOUND;
     }
 
@@ -250,6 +244,7 @@ private:
   Record             *record_ = nullptr;
   const Table        *table_  = nullptr;
   vector<FieldExpr *> speces_;
+  string qualifier_;
 };
 
 /**
@@ -325,6 +320,7 @@ public:
 
   void set_names(const vector<TupleCellSpec> &specs) { specs_ = specs; }
   void set_cells(const vector<Value> &cells) { cells_ = cells; }
+  void set_cells(vector<Value> &&cells) { cells_ = std::move(cells); }
 
   virtual int cell_num() const override { return static_cast<int>(cells_.size()); }
 

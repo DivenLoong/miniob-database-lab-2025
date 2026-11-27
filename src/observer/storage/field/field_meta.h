@@ -42,6 +42,8 @@ public:
   int         len() const;
   bool        visible() const;
   int         field_id() const;
+  int vector_dimension() const { return vector_dimension_; }
+  void set_vector_dimension(int dimension) { vector_dimension_ = dimension; }
   bool nullable() const { return nullable_; }
   void set_nullable(bool nullable) { nullable_ = nullable; }
   void set_null_position(int byte, unsigned char mask) { null_byte_ = byte; null_mask_ = mask; }
@@ -71,6 +73,7 @@ protected:
   int      attr_len_;
   bool     visible_;
   int      field_id_;
+  int vector_dimension_ = 0;
   bool nullable_ = false;
   int null_byte_ = 0;
   unsigned char null_mask_ = 0;

@@ -16,23 +16,27 @@ See the Mulan PSL v2 for more details. */
 class Table;
 class FieldMeta;
 
+struct UpdateColumnValue
+{
+  const FieldMeta *field;
+  Value value;
+};
+
 class UpdateStmt final : public Stmt
 {
 public:
-  UpdateStmt(Table *table, const FieldMeta *field, Value value, unique_ptr<FilterStmt> filter)
-      : table_(table), field_(field), value_(std::move(value)), filter_(std::move(filter)) {}
+  UpdateStmt(Table *table, vector<UpdateColumnValue> values, unique_ptr<FilterStmt> filter)
+      : table_(table), values_(std::move(values)), filter_(std::move(filter)) {}
 
   static RC create(Db *db, const UpdateSqlNode &update_sql, Stmt *&stmt);
   StmtType type() const override { return StmtType::UPDATE; }
 
   Table *table() const { return table_; }
-  const FieldMeta *field() const { return field_; }
-  const Value &value() const { return value_; }
+  const vector<UpdateColumnValue> &values() const { return values_; }
   FilterStmt *filter_stmt() const { return filter_.get(); }
 
 private:
   Table *table_;
-  const FieldMeta *field_;
-  Value value_;
+  vector<UpdateColumnValue> values_;
   unique_ptr<FilterStmt> filter_;
 };

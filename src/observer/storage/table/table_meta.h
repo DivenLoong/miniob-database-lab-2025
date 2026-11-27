@@ -34,12 +34,14 @@ public:
   TableMeta(const TableMeta &other);
 
   void swap(TableMeta &other) noexcept;
+  void set_name(const string &name) { name_ = name; }
 
   RC init(int32_t table_id, const char *name, const vector<FieldMeta> *trx_fields,
       span<const AttrInfoSqlNode> attributes, const vector<string> &primary_keys, StorageFormat storage_format,
       StorageEngine storage_engine);
 
   RC add_index(const IndexMeta &index);
+  void remove_index(const char *name);
 
 public:
   int32_t             table_id() const { return table_id_; }

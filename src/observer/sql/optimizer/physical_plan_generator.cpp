@@ -23,6 +23,10 @@ See the Mulan PSL v2 for more details. */
 #include "sql/operator/update_physical_operator.h"
 #include "sql/operator/sort_logical_operator.h"
 #include "sql/operator/sort_physical_operator.h"
+#include "sql/operator/union_logical_operator.h"
+#include "sql/operator/union_physical_operator.h"
+#include "sql/operator/view_scan_logical_operator.h"
+#include "sql/operator/view_scan_physical_operator.h"
 #include "sql/operator/delete_physical_operator.h"
 #include "sql/operator/explain_logical_operator.h"
 #include "sql/operator/explain_physical_operator.h"
@@ -75,6 +79,32 @@ RC PhysicalPlanGenerator::create(LogicalOperator &logical_operator, unique_ptr<P
       return create_plan(static_cast<InsertLogicalOperator &>(logical_operator), oper, session);
     } break;
 
+    case LogicalOperatorType::VIEW_SCAN: {
+      auto &view = static_cast<ViewScanLogicalOperator &>(logical_operator);
+      auto physical = make_unique<ViewScanPhysicalOperator>(view.schema(), view.qualifier());
+      unique_ptr<PhysicalOperator> input;
+      RC rc = create(*view.children().front(), input, session);
+      if (OB_FAIL(rc)) {
+        return rc;
+      }
+      physical->add_child(std::move(input));
+      oper = std::move(physical);
+      return RC::SUCCESS;
+    }
+    case LogicalOperatorType::UNION_SELECT: {
+      auto &union_plan = static_cast<UnionLogicalOperator &>(logical_operator);
+      auto physical = make_unique<UnionPhysicalOperator>(union_plan.all());
+      for (auto &branch : union_plan.children()) {
+        unique_ptr<PhysicalOperator> input;
+        RC rc = create(*branch, input, session);
+        if (OB_FAIL(rc)) {
+          return rc;
+        }
+        physical->add_child(std::move(input));
+      }
+      oper = std::move(physical);
+      return RC::SUCCESS;
+    }
     case LogicalOperatorType::SORT: {
       auto &sort = static_cast<SortLogicalOperator &>(logical_operator);
       auto physical = make_unique<SortPhysicalOperator>(std::move(sort.keys()), sort.limit());
@@ -89,7 +119,7 @@ RC PhysicalPlanGenerator::create(LogicalOperator &logical_operator, unique_ptr<P
     }
     case LogicalOperatorType::UPDATE: {
       auto &update = static_cast<UpdateLogicalOperator &>(logical_operator);
-      auto physical = make_unique<UpdatePhysicalOperator>(update.table(), update.field(), update.value());
+      auto physical = make_unique<UpdatePhysicalOperator>(update.table(), update.values());
       unique_ptr<PhysicalOperator> input;
       RC rc = create(*update.children().front(), input, session);
       if (OB_FAIL(rc)) {
@@ -160,7 +190,7 @@ RC PhysicalPlanGenerator::create_plan(TableGetLogicalOperator &table_get_oper, u
     if (expr->type() == ExprType::COMPARISON) {
       auto comparison_expr = static_cast<ComparisonExpr *>(expr.get());
       // 简单处理，就找等值查询
-      if (comparison_expr->comp() != EQUAL_TO && comparison_expr->comp() != NOT_EQUAL) {
+      if (comparison_expr->comp() != EQUAL_TO) {
         continue;
       }
 
@@ -182,7 +212,7 @@ RC PhysicalPlanGenerator::create_plan(TableGetLogicalOperator &table_get_oper, u
         value_expr = static_cast<ValueExpr *>(left_expr.get());
       }
 
-      if (field_expr == nullptr) {
+      if (field_expr == nullptr || value_expr->get_value().is_null()) {
         continue;
       }
 
@@ -206,11 +236,13 @@ RC PhysicalPlanGenerator::create_plan(TableGetLogicalOperator &table_get_oper, u
         &value,
         true /*right_inclusive*/);
 
+    index_scan_oper->set_qualifier(table_get_oper.qualifier());
     index_scan_oper->set_predicates(std::move(predicates));
     oper = unique_ptr<PhysicalOperator>(index_scan_oper);
     LOG_TRACE("use index scan");
   } else {
     auto table_scan_oper = new TableScanPhysicalOperator(table, table_get_oper.read_write_mode());
+    table_scan_oper->set_qualifier(table_get_oper.qualifier());
     table_scan_oper->set_predicates(std::move(predicates));
     oper = unique_ptr<PhysicalOperator>(table_scan_oper);
     LOG_TRACE("use table scan");

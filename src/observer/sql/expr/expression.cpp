@@ -14,6 +14,7 @@ See the Mulan PSL v2 for more details. */
 
 #include "sql/expr/expression.h"
 #include "sql/expr/tuple.h"
+#include "sql/expr/subquery_expr.h"
 #include "sql/expr/arithmetic_operator.hpp"
 
 using namespace std;
@@ -32,7 +33,7 @@ bool FieldExpr::equal(const Expression &other) const
     return false;
   }
   const auto &other_field_expr = static_cast<const FieldExpr &>(other);
-  return table_name() == other_field_expr.table_name() && field_name() == other_field_expr.field_name();
+  return strcasecmp(table_name(), other_field_expr.table_name()) == 0 && field_name() == other_field_expr.field_name();
 }
 
 // TODO: 在进行表达式计算时，`chunk` 包含了所有列，因此可以通过 `field_id` 获取到对应列。
@@ -203,6 +204,40 @@ RC ComparisonExpr::try_get_value(Value &cell) const
 
 RC ComparisonExpr::get_value(const Tuple &tuple, Value &value) const
 {
+  if (comp_ >= IN_SUBQUERY && comp_ <= NOT_EXISTS_SUBQUERY) {
+    const bool exists = comp_ == EXISTS_SUBQUERY || comp_ == NOT_EXISTS_SUBQUERY;
+    const auto &query = static_cast<const SubqueryExpr &>(*right_);
+    vector<Value> rows;
+    RC rc = query.evaluate(tuple, exists ? 1 : 0, !exists, rows);
+    if (OB_FAIL(rc)) {
+      return rc;
+    }
+    if (exists) {
+      value.set_boolean((comp_ == EXISTS_SUBQUERY) == !rows.empty());
+      return RC::SUCCESS;
+    }
+
+    Value needle;
+    rc = left_->get_value(tuple, needle);
+    if (OB_FAIL(rc)) {
+      return rc;
+    }
+    bool unknown = false;
+    for (const Value &candidate : rows) {
+      if (needle.is_null() || candidate.is_null()) {
+        unknown = true;
+      } else if (needle.compare(candidate) == 0) {
+        value.set_boolean(comp_ == IN_SUBQUERY);
+        return RC::SUCCESS;
+      }
+    }
+    if (unknown) {
+      value.set_null();
+    } else {
+      value.set_boolean(comp_ == NOT_IN_SUBQUERY);
+    }
+    return RC::SUCCESS;
+  }
   Value left_value;
   Value right_value;
 

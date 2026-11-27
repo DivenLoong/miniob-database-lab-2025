@@ -20,7 +20,11 @@ See the Mulan PSL v2 for more details. */
 #include "sql/stmt/create_table_stmt.h"
 #include "sql/stmt/delete_stmt.h"
 #include "sql/stmt/drop_table_stmt.h"
+#include "sql/stmt/drop_index_stmt.h"
 #include "sql/stmt/update_stmt.h"
+#include "sql/stmt/union_stmt.h"
+#include "sql/stmt/alter_table_stmt.h"
+#include "sql/stmt/view_ddl_stmt.h"
 #include "sql/stmt/desc_table_stmt.h"
 #include "sql/stmt/exit_stmt.h"
 #include "sql/stmt/explain_stmt.h"
@@ -37,6 +41,9 @@ bool stmt_type_ddl(StmtType type)
 {
   switch (type) {
     case StmtType::CREATE_TABLE:
+    case StmtType::CREATE_VIEW:
+    case StmtType::DROP_VIEW:
+    case StmtType::ALTER_TABLE:
     case StmtType::DROP_TABLE:
     case StmtType::DROP_INDEX:
     case StmtType::CREATE_INDEX: {
@@ -61,8 +68,33 @@ RC Stmt::create_stmt(Db *db, ParsedSqlNode &sql_node, Stmt *&stmt)
     case SCF_UPDATE: {
       return UpdateStmt::create(db, sql_node.update, stmt);
     }
+    case SCF_CREATE_VIEW:
+    case SCF_DROP_VIEW: {
+      const auto type = sql_node.flag == SCF_CREATE_VIEW ? StmtType::CREATE_VIEW : StmtType::DROP_VIEW;
+      stmt = new ViewDdlStmt(type, std::move(sql_node.create_view));
+      return RC::SUCCESS;
+    }
+    case SCF_ALTER_TABLE: {
+      stmt = new AlterTableStmt(sql_node.alter_table);
+      return RC::SUCCESS;
+    }
     case SCF_DROP_TABLE: {
       stmt = new DropTableStmt(sql_node.drop_table.relation_name);
+      return RC::SUCCESS;
+    }
+    case SCF_UNION: {
+      Stmt *left = nullptr;
+      RC rc = create_stmt(db, *sql_node.union_left, left);
+      if (OB_FAIL(rc)) {
+        return rc;
+      }
+      unique_ptr<Stmt> first(left);
+      Stmt *right = nullptr;
+      rc = create_stmt(db, *sql_node.union_right, right);
+      if (OB_FAIL(rc)) {
+        return rc;
+      }
+      stmt = new UnionStmt(std::move(first), unique_ptr<Stmt>(right), sql_node.union_all);
       return RC::SUCCESS;
     }
     case SCF_SELECT: {
@@ -73,6 +105,10 @@ RC Stmt::create_stmt(Db *db, ParsedSqlNode &sql_node, Stmt *&stmt)
       return ExplainStmt::create(db, sql_node.explain, stmt);
     }
 
+    case SCF_DROP_INDEX: {
+      stmt = new DropIndexStmt(sql_node.drop_index);
+      return RC::SUCCESS;
+    }
     case SCF_CREATE_INDEX: {
       return CreateIndexStmt::create(db, sql_node.create_index, stmt);
     }

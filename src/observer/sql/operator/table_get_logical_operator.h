@@ -51,7 +51,9 @@ public:
 
   unique_ptr<LogicalProperty> find_log_prop(const vector<LogicalProperty *> &log_props) override;
 
-  Table        *table() const { return table_; }
+  Table *table() const { return table_; }
+  const string &qualifier() const { return qualifier_; }
+  void set_qualifier(const string &qualifier) { qualifier_ = qualifier; }
   ReadWriteMode read_write_mode() const { return mode_; }
 
   void set_predicates(vector<unique_ptr<Expression>> &&exprs);
@@ -66,4 +68,5 @@ private:
   // 不包含复杂的表达式运算，比如加减乘除、或者conjunction expression
   // 如果有多个表达式，他们的关系都是 AND
   vector<unique_ptr<Expression>> predicates_;
+  string qualifier_;
 };

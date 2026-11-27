@@ -26,6 +26,8 @@ string physical_operator_type_name(PhysicalOperatorType type)
     case PhysicalOperatorType::INSERT: return "INSERT";
     case PhysicalOperatorType::DELETE: return "DELETE";
     case PhysicalOperatorType::SORT: return "SORT";
+    case PhysicalOperatorType::UNION_SELECT: return "UNION";
+    case PhysicalOperatorType::VIEW_SCAN: return "VIEW SCAN";
     case PhysicalOperatorType::UPDATE: return "UPDATE";
     case PhysicalOperatorType::PROJECT: return "PROJECT";
     case PhysicalOperatorType::STRING_LIST: return "STRING_LIST";

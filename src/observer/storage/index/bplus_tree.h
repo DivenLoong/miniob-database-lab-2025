@@ -66,6 +66,9 @@ public:
 
   int operator()(const char *v1, const char *v2) const
   {
+    if (attr_type_ == AttrType::INDEX_KEYS) {
+      return memcmp(v1, v2, attr_length_);
+    }
     // TODO: optimized the comparison
     Value left;
     left.set_type(attr_type_);
@@ -126,6 +129,9 @@ public:
 
   string operator()(const char *v) const
   {
+    if (attr_type_ == AttrType::INDEX_KEYS) {
+      return "<composite key>";
+    }
     Value value(attr_type_, const_cast<char *>(v), attr_length_);
     return value.to_string();
   }

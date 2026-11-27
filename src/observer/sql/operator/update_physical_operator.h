@@ -11,12 +11,13 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include "sql/operator/physical_operator.h"
+#include "sql/stmt/update_stmt.h"
 
 class UpdatePhysicalOperator final : public PhysicalOperator
 {
 public:
-  UpdatePhysicalOperator(Table *table, const FieldMeta *field, const Value &value)
-      : table_(table), field_(field), value_(value) {}
+  UpdatePhysicalOperator(Table *table, const vector<UpdateColumnValue> &values)
+      : table_(table), values_(values) {}
 
   PhysicalOperatorType type() const override { return PhysicalOperatorType::UPDATE; }
   OpType get_op_type() const override { return OpType::UPDATE; }
@@ -26,6 +27,5 @@ public:
 
 private:
   Table *table_;
-  const FieldMeta *field_;
-  Value value_;
+  vector<UpdateColumnValue> values_;
 };

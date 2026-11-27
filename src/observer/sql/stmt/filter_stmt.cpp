@@ -13,11 +13,11 @@ See the Mulan PSL v2 for more details. */
 #include "sql/parser/expression_binder.h"
 #include "sql/expr/expression_iterator.h"
 
-RC FilterStmt::create(Db *, Table *default_table, unordered_map<string, Table *> *tables,
-    const ConditionSqlNode *conditions, int condition_num, FilterStmt *&stmt, bool allow_aggregates)
+RC FilterStmt::create(Db *db, Table *default_table, unordered_map<string, Table *> *tables,
+    const ConditionSqlNode *conditions, int condition_num, FilterStmt *&stmt, bool allow_aggregates, BinderContext *source_context)
 {
   stmt = nullptr;
-  BinderContext context;
+  BinderContext context(db);
   if (tables != nullptr) {
     for (const auto &[name, table] : *tables) {
       context.add_table(table);
@@ -25,10 +25,11 @@ RC FilterStmt::create(Db *, Table *default_table, unordered_map<string, Table *>
   } else if (default_table != nullptr) {
     context.add_table(default_table);
   }
-  ExpressionBinder binder(context);
+  ExpressionBinder binder(source_context == nullptr ? context : *source_context);
   auto result = make_unique<FilterStmt>();
   for (int i = 0; i < condition_num; ++i) {
     const ConditionSqlNode &condition = conditions[i];
+    result->disjunctive_ = result->disjunctive_ || condition.disjunctive;
     auto comparison = make_unique<ComparisonExpr>(
         condition.comp, condition.left_expression->copy(), condition.right_expression->copy());
     unique_ptr<Expression> expression = std::move(comparison);

@@ -27,6 +27,15 @@ See the Mulan PSL v2 for more details. */
 #include "oblsm/include/ob_lsm.h"
 
 class Table;
+class Stmt;
+
+struct ViewDefinition
+{
+  Table *schema = nullptr;
+  string query;
+  string write_table;
+  vector<string> write_columns;
+};
 class LogHandler;
 class BufferPoolManager;
 class TrxKit;
@@ -75,6 +84,15 @@ public:
    */
   Table *find_table(const char *table_name) const;
   RC drop_table(const char *table_name);
+  RC alter_table(const AlterTableSqlNode &alter);
+  RC create_view(const CreateViewSqlNode &view);
+  RC drop_view(const string &name);
+  const ViewDefinition *find_view(const string &name) const;
+  RC prepare_view_query(const string &query, unique_ptr<Stmt> &statement);
+  string view_write_column(const ViewDefinition &view, const string &exposed) const;
+  RC view_write_conditions(const ViewDefinition &view, const vector<ConditionSqlNode> &given,
+      vector<ConditionSqlNode> &combined);
+
   /**
    * @brief 根据表ID查找表
    */
@@ -108,6 +126,7 @@ public:
 private:
   /// @brief 打开所有的表。在数据库初始化的时候会执行
   RC open_all_tables();
+  RC open_views();
   /// @brief 恢复数据。在数据库初始化的时候运行。
   RC recover();
 
@@ -138,6 +157,7 @@ private:
   string                         name_;                 ///< 数据库名称
   string                         path_;                 ///< 数据库文件存放的目录
   unordered_map<string, Table *> opened_tables_;        ///< 当前所有打开的表
+  unordered_map<string, ViewDefinition> views_;
   unique_ptr<BufferPoolManager>  buffer_pool_manager_;  ///< 当前数据库的buffer pool管理器
   unique_ptr<LogHandler>         log_handler_;          ///< 当前数据库的日志处理器
   unique_ptr<TrxKit>             trx_kit_;              ///< 当前数据库的事务管理器

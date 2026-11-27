@@ -11,21 +11,20 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include "sql/operator/logical_operator.h"
+#include "sql/stmt/update_stmt.h"
 
 class UpdateLogicalOperator final : public LogicalOperator
 {
 public:
-  UpdateLogicalOperator(Table *table, const FieldMeta *field, const Value &value)
-      : table_(table), field_(field), value_(value) {}
+  UpdateLogicalOperator(Table *table, const vector<UpdateColumnValue> &values)
+      : table_(table), values_(values) {}
 
   LogicalOperatorType type() const override { return LogicalOperatorType::UPDATE; }
   OpType get_op_type() const override { return OpType::LOGICALUPDATE; }
   Table *table() const { return table_; }
-  const FieldMeta *field() const { return field_; }
-  const Value &value() const { return value_; }
+  const vector<UpdateColumnValue> &values() const { return values_; }
 
 private:
   Table *table_;
-  const FieldMeta *field_;
-  Value value_;
+  vector<UpdateColumnValue> values_;
 };

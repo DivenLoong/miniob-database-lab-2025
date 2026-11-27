@@ -38,17 +38,27 @@ RC DeleteStmt::create(Db *db, const DeleteSqlNode &delete_sql, Stmt *&stmt)
 
   // check whether the table exists
   Table *table = db->find_table(table_name);
+  vector<ConditionSqlNode> conditions;
+  if (const ViewDefinition *view = db->find_view(table_name); view != nullptr) {
+    RC rc = db->view_write_conditions(*view, delete_sql.conditions, conditions);
+    if (OB_FAIL(rc)) {
+      return rc;
+    }
+    table = db->find_table(view->write_table.c_str());
+  } else {
+    conditions = delete_sql.conditions;
+  }
   if (nullptr == table) {
     LOG_WARN("no such table. db=%s, table_name=%s", db->name(), table_name);
     return RC::SCHEMA_TABLE_NOT_EXIST;
   }
 
   unordered_map<string, Table *> table_map;
-  table_map.insert(pair<string, Table *>(string(table_name), table));
+  table_map.insert(pair<string, Table *>(string(table->name()), table));
 
   FilterStmt *filter_stmt = nullptr;
   RC          rc          = FilterStmt::create(
-      db, table, &table_map, delete_sql.conditions.data(), static_cast<int>(delete_sql.conditions.size()), filter_stmt);
+      db, table, &table_map, conditions.data(), static_cast<int>(conditions.size()), filter_stmt);
   if (rc != RC::SUCCESS) {
     LOG_WARN("failed to create filter statement. rc=%d:%s", rc, strrc(rc));
     return rc;

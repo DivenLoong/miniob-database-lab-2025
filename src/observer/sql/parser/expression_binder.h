@@ -19,17 +19,32 @@ See the Mulan PSL v2 for more details. */
 class BinderContext
 {
 public:
-  BinderContext()          = default;
-  virtual ~BinderContext() = default;
+  struct Binding
+  {
+    Table *table;
+    string qualifier;
+  };
 
-  void add_table(Table *table) { query_tables_.push_back(table); }
-
-  Table *find_table(const char *table_name) const;
-
-  const vector<Table *> &query_tables() const { return query_tables_; }
+  explicit BinderContext(Db *db = nullptr, const BinderContext *outer = nullptr) : db_(db), outer_(outer) {}
+  RC add_table(Table *table, string qualifier = {});
+  const Binding *find_table(const char *qualifier) const;
+  const vector<Binding> &bindings() const { return bindings_; }
+  Db *db() const { return db_; }
+  const BinderContext *outer() const { return outer_; }
+  bool correlated() const { return correlated_; }
+  void mark_outer_reference(int depth) const
+  {
+    correlated_ = true;
+    if (depth > 1 && outer_ != nullptr) {
+      outer_->mark_outer_reference(depth - 1);
+    }
+  }
 
 private:
-  vector<Table *> query_tables_;
+  Db *db_;
+  const BinderContext *outer_;
+  vector<Binding> bindings_;
+  mutable bool correlated_ = false;
 };
 
 /**

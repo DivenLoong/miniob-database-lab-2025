@@ -46,6 +46,8 @@ enum class ExprType
   COMPARISON,   ///< 需要做比较的表达式
   CONJUNCTION,  ///< 多个表达式使用同一种关系(AND或OR)来联结
   SCALAR_FUNCTION,
+  SUBQUERY,
+  OUTER_FIELD,
   ARITHMETIC,   ///< 算术运算
   AGGREGATION,  ///< 聚合运算
 };
@@ -205,17 +207,24 @@ public:
 
   bool equal(const Expression &other) const override;
 
-  unique_ptr<Expression> copy() const override { return make_unique<FieldExpr>(field_); }
+  unique_ptr<Expression> copy() const override
+  {
+    auto result = make_unique<FieldExpr>(field_);
+    result->set_qualifier(qualifier_);
+    result->set_name(name());
+    return result;
+  }
 
   ExprType type() const override { return ExprType::FIELD; }
-  AttrType value_type() const override { return field_.attr_type(); }
+  AttrType value_type() const override { return field_.attr_type() == AttrType::TEXTS ? AttrType::CHARS : field_.attr_type(); }
   int      value_length() const override { return field_.meta()->len(); }
 
   Field &field() { return field_; }
 
   const Field &field() const { return field_; }
 
-  const char *table_name() const { return field_.table_name(); }
+  const char *table_name() const { return qualifier_.empty() ? field_.table_name() : qualifier_.c_str(); }
+  void set_qualifier(const string &qualifier) { qualifier_ = qualifier; }
   const char *field_name() const { return field_.field_name(); }
 
   RC get_column(Chunk &chunk, Column &column) override;
@@ -224,6 +233,7 @@ public:
 
 private:
   Field field_;
+  string qualifier_;
 };
 
 /**

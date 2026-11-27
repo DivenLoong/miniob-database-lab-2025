@@ -14,6 +14,8 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
+#include <mutex>
+
 #include "storage/index/bplus_tree.h"
 #include "storage/index/index.h"
 
@@ -33,6 +35,7 @@ public:
 
   RC insert_entry(const char *record, const RID *rid) override;
   RC delete_entry(const char *record, const RID *rid) override;
+  bool same_key(const char *left, const char *right) const override;
 
   /**
    * 扫描指定范围的数据
@@ -43,6 +46,14 @@ public:
   RC sync() override;
 
 private:
+  RC init_key(Table *table, const IndexMeta &meta);
+  string pack_key(const char *record, bool &has_null) const;
+  void encode_part(char *destination, const FieldMeta &field, const char *source, size_t size) const;
+  string scan_bound(const char *key, int len, unsigned char suffix) const;
+
+  vector<FieldMeta> key_fields_;
+  int packed_size_ = 0;
+  std::mutex uniqueness_mutex_;
   bool             inited_ = false;
   Table           *table_  = nullptr;
   BplusTreeHandler index_handler_;

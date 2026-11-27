@@ -50,6 +50,8 @@ enum class PhysicalOperatorType
   INSERT,
   UPDATE,
   SORT,
+  UNION_SELECT,
+  VIEW_SCAN,
   SCALAR_GROUP_BY,
   HASH_GROUP_BY,
   GROUP_BY_VEC,

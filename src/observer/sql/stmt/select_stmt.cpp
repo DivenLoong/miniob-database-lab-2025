@@ -32,34 +32,38 @@ SelectStmt::~SelectStmt()
   }
 }
 
-RC SelectStmt::create(Db *db, SelectSqlNode &select_sql, Stmt *&stmt)
+RC SelectStmt::create(Db *db, SelectSqlNode &select_sql, Stmt *&stmt, const BinderContext *outer, bool *correlated)
 {
   if (nullptr == db) {
     LOG_WARN("invalid argument. db is null");
     return RC::INVALID_ARGUMENT;
   }
 
-  BinderContext binder_context;
-
-  // collect tables in `from` statement
-  vector<Table *>                tables;
-  unordered_map<string, Table *> table_map;
-  for (size_t i = 0; i < select_sql.relations.size(); i++) {
-    const char *table_name = select_sql.relations[i].c_str();
-    if (nullptr == table_name) {
-      LOG_WARN("invalid argument. relation name is null. index=%d", i);
-      return RC::INVALID_ARGUMENT;
+  BinderContext binder_context(db, outer);
+  vector<Table *> tables;
+  vector<string> qualifiers;
+  vector<unique_ptr<Stmt>> view_sources;
+  for (const RelationSqlNode &relation : select_sql.relations) {
+    Table *table = db->find_table(relation.name.c_str());
+    unique_ptr<Stmt> source;
+    if (table == nullptr) {
+      const ViewDefinition *view = db->find_view(relation.name);
+      if (view == nullptr) {
+        return RC::SCHEMA_TABLE_NOT_EXIST;
+      }
+      RC rc = db->prepare_view_query(view->query, source);
+      if (OB_FAIL(rc)) {
+        return rc;
+      }
+      table = view->schema;
     }
-
-    Table *table = db->find_table(table_name);
-    if (nullptr == table) {
-      LOG_WARN("no such table. db=%s, table_name=%s", db->name(), table_name);
-      return RC::SCHEMA_TABLE_NOT_EXIST;
+    view_sources.push_back(std::move(source));
+    RC rc = binder_context.add_table(table, relation.alias);
+    if (OB_FAIL(rc)) {
+      return rc;
     }
-
-    binder_context.add_table(table);
     tables.push_back(table);
-    table_map.insert({table_name, table});
+    qualifiers.push_back(relation.alias);
   }
 
   // collect query fields in `select` statement
@@ -122,18 +126,18 @@ RC SelectStmt::create(Db *db, SelectSqlNode &select_sql, Stmt *&stmt)
   FilterStmt *filter_stmt = nullptr;
   RC          rc          = FilterStmt::create(db,
       default_table,
-      &table_map,
+      nullptr,
       select_sql.conditions.data(),
       static_cast<int>(select_sql.conditions.size()),
-      filter_stmt);
+      filter_stmt, false, &binder_context);
   if (rc != RC::SUCCESS) {
     LOG_WARN("cannot construct filter stmt");
     return rc;
   }
 
   FilterStmt *having_stmt = nullptr;
-  rc = FilterStmt::create(db, default_table, &table_map, select_sql.having.data(),
-      static_cast<int>(select_sql.having.size()), having_stmt, true);
+  rc = FilterStmt::create(db, default_table, nullptr, select_sql.having.data(),
+      static_cast<int>(select_sql.having.size()), having_stmt, true, &binder_context);
   if (OB_FAIL(rc)) {
     delete filter_stmt;
     return rc;
@@ -143,12 +147,17 @@ RC SelectStmt::create(Db *db, SelectSqlNode &select_sql, Stmt *&stmt)
   SelectStmt *select_stmt = new SelectStmt();
 
   select_stmt->tables_.swap(tables);
+  select_stmt->qualifiers_.swap(qualifiers);
+  select_stmt->view_sources_.swap(view_sources);
   select_stmt->query_expressions_.swap(bound_expressions);
   select_stmt->filter_stmt_ = filter_stmt;
   select_stmt->having_stmt_ = having_stmt;
   select_stmt->group_by_.swap(group_by_expressions);
   select_stmt->order_by_.swap(order_by);
   select_stmt->limit_ = select_sql.limit;
-  stmt                      = select_stmt;
+  if (correlated != nullptr) {
+    *correlated = binder_context.correlated();
+  }
+  stmt = select_stmt;
   return RC::SUCCESS;
 }

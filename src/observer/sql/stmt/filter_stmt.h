@@ -23,15 +23,18 @@ See the Mulan PSL v2 for more details. */
 class Db;
 class Table;
 class FieldMeta;
+class BinderContext;
 
 class FilterStmt
 {
 public:
   static RC create(Db *db, Table *default_table, unordered_map<string, Table *> *tables,
-      const ConditionSqlNode *conditions, int condition_num, FilterStmt *&stmt, bool allow_aggregates = false);
+      const ConditionSqlNode *conditions, int condition_num, FilterStmt *&stmt, bool allow_aggregates = false, BinderContext *source_context = nullptr);
 
   vector<unique_ptr<Expression>> &predicates() { return predicates_; }
+  bool disjunctive() const { return disjunctive_; }
 
 private:
   vector<unique_ptr<Expression>> predicates_;
+  bool disjunctive_ = false;
 };

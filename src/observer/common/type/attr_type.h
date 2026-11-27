@@ -24,6 +24,8 @@ enum class AttrType
   BOOLEANS,  ///< boolean类型，当前不是由parser解析出来的，是程序内部使用的
   DATES,     ///< Calendar dates encoded as YYYYMMDD in a 32-bit integer
   NULLS,     ///< SQL NULL value
+  INDEX_KEYS, ///< Fixed-length binary key for composite indexes
+  TEXTS,      ///< Out-of-row text payload
   MAXTYPE,   ///< 请在 UNDEFINED 与 MAXTYPE 之间增加新类型
 };
 

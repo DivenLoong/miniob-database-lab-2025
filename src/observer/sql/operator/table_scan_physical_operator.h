@@ -32,6 +32,7 @@ public:
   TableScanPhysicalOperator(Table *table, ReadWriteMode mode) : table_(table), mode_(mode) {}
 
   virtual ~TableScanPhysicalOperator() = default;
+  void set_qualifier(const string &qualifier) { tuple_.set_qualifier(qualifier); }
 
   string param() const override;
 

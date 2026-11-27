@@ -16,6 +16,7 @@ See the Mulan PSL v2 for more details. */
 
 #include "common/sys/rc.h"
 #include "common/lang/string.h"
+#include "common/lang/vector.h"
 
 class TableMeta;
 class FieldMeta;
@@ -36,10 +37,15 @@ public:
   IndexMeta() = default;
 
   RC init(const char *name, const FieldMeta &field);
+  RC init(const char *name, const vector<const FieldMeta *> &fields, bool unique);
 
 public:
   const char *name() const;
   const char *field() const;
+  const vector<string> &fields() const { return fields_; }
+  bool unique() const { return unique_; }
+  bool full_text() const { return full_text_; }
+  void set_full_text(bool enabled) { full_text_ = enabled; }
 
   void desc(ostream &os) const;
 
@@ -49,5 +55,7 @@ public:
 
 protected:
   string name_;   // index's name
-  string field_;  // field's name
+  vector<string> fields_;
+  bool unique_ = false;
+  bool full_text_ = false;
 };

@@ -37,7 +37,8 @@ Value::Value(const Value &other)
   this->length_    = other.length_;
   this->own_data_  = other.own_data_;
   switch (this->attr_type_) {
-    case AttrType::CHARS: {
+    case AttrType::CHARS:
+    case AttrType::VECTORS: {
       set_string_from_other(other);
     } break;
 
@@ -67,7 +68,8 @@ Value &Value::operator=(const Value &other)
   this->length_    = other.length_;
   this->own_data_  = other.own_data_;
   switch (this->attr_type_) {
-    case AttrType::CHARS: {
+    case AttrType::CHARS:
+    case AttrType::VECTORS: {
       set_string_from_other(other);
     } break;
 
@@ -97,6 +99,7 @@ void Value::reset()
 {
   switch (attr_type_) {
     case AttrType::CHARS:
+    case AttrType::VECTORS:
       if (own_data_ && value_.pointer_value_ != nullptr) {
         delete[] value_.pointer_value_;
         value_.pointer_value_ = nullptr;
@@ -113,6 +116,14 @@ void Value::reset()
 void Value::set_data(char *data, int length)
 {
   switch (attr_type_) {
+    case AttrType::VECTORS: {
+      reset();
+      attr_type_ = AttrType::VECTORS;
+      value_.pointer_value_ = new char[length];
+      memcpy(value_.pointer_value_, data, length);
+      own_data_ = true;
+      length_ = length;
+    } break;
     case AttrType::CHARS: {
       set_string(data, length);
     } break;
@@ -122,17 +133,32 @@ void Value::set_data(char *data, int length)
       length_           = length;
     } break;
     case AttrType::FLOATS: {
-      value_.float_value_ = *(float *)data;
+      memcpy(&value_.float_value_, data, sizeof(float));
       length_             = length;
     } break;
     case AttrType::BOOLEANS: {
-      value_.bool_value_ = *(int *)data != 0;
+      value_.bool_value_ = *data != 0;
       length_            = length;
     } break;
     default: {
       LOG_WARN("unknown data type: %d", attr_type_);
     } break;
   }
+}
+
+void Value::set_vector(span<const float> values)
+{
+  reset();
+  attr_type_ = AttrType::VECTORS;
+  set_data(reinterpret_cast<const char *>(values.data()), values.size_bytes());
+}
+
+span<const float> Value::get_vector() const
+{
+  if (attr_type_ != AttrType::VECTORS) {
+    return {};
+  }
+  return {reinterpret_cast<const float *>(value_.pointer_value_), static_cast<size_t>(length_) / sizeof(float)};
 }
 
 void Value::set_int(int val)
@@ -206,6 +232,9 @@ void Value::set_value(const Value &value)
     case AttrType::CHARS: {
       set_string(value.get_string().c_str());
     } break;
+    case AttrType::VECTORS: {
+      *this = value;
+    } break;
     case AttrType::NULLS: {
       set_null();
     } break;
@@ -220,7 +249,7 @@ void Value::set_value(const Value &value)
 
 void Value::set_string_from_other(const Value &other)
 {
-  ASSERT(attr_type_ == AttrType::CHARS, "attr type is not CHARS");
+  ASSERT(attr_type_ == AttrType::CHARS || attr_type_ == AttrType::VECTORS, "value is not byte-backed");
   value_.pointer_value_ = nullptr;
   if (own_data_ && other.value_.pointer_value_ != nullptr) {
     this->value_.pointer_value_ = new char[this->length_ + 1];
@@ -232,6 +261,7 @@ void Value::set_string_from_other(const Value &other)
 char *Value::data() const
 {
   switch (attr_type_) {
+    case AttrType::VECTORS:
     case AttrType::CHARS: {
       return value_.pointer_value_;
     } break;

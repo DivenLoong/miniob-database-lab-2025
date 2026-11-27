@@ -32,6 +32,9 @@ See the Mulan PSL v2 for more details. */
 #include "sql/stmt/update_stmt.h"
 #include "sql/operator/update_logical_operator.h"
 #include "sql/operator/sort_logical_operator.h"
+#include "sql/operator/union_logical_operator.h"
+#include "sql/operator/view_scan_logical_operator.h"
+#include "sql/stmt/union_stmt.h"
 #include "sql/stmt/explain_stmt.h"
 #include "sql/stmt/filter_stmt.h"
 #include "sql/stmt/insert_stmt.h"
@@ -53,6 +56,19 @@ RC LogicalPlanGenerator::create(Stmt *stmt, unique_ptr<LogicalOperator> &logical
       rc = create_plan(calc_stmt, logical_operator);
     } break;
 
+    case StmtType::UNION_SELECT: {
+      auto &statement = static_cast<UnionStmt &>(*stmt);
+      auto operation = make_unique<UnionLogicalOperator>(statement.all());
+      for (Stmt *branch : {statement.left(), statement.right()}) {
+        unique_ptr<LogicalOperator> input;
+        rc = create(branch, input);
+        if (OB_FAIL(rc)) {
+          return rc;
+        }
+        operation->add_child(std::move(input));
+      }
+      logical_operator = std::move(operation);
+    } break;
     case StmtType::SELECT: {
       SelectStmt *select_stmt = static_cast<SelectStmt *>(stmt);
 
@@ -107,9 +123,22 @@ RC LogicalPlanGenerator::create_plan(SelectStmt *select_stmt, unique_ptr<Logical
   }
 
   const vector<Table *> &tables = select_stmt->tables();
-  for (Table *table : tables) {
-
-    unique_ptr<LogicalOperator> table_get_oper(new TableGetLogicalOperator(table, ReadWriteMode::READ_ONLY));
+  for (size_t i = 0; i < tables.size(); ++i) {
+    unique_ptr<LogicalOperator> table_get_oper;
+    if (select_stmt->view_sources()[i]) {
+      unique_ptr<LogicalOperator> definition;
+      rc = create(select_stmt->view_sources()[i].get(), definition);
+      if (OB_FAIL(rc)) {
+        return rc;
+      }
+      auto view = make_unique<ViewScanLogicalOperator>(tables[i], select_stmt->qualifiers()[i]);
+      view->add_child(std::move(definition));
+      table_get_oper = std::move(view);
+    } else {
+      auto scan = make_unique<TableGetLogicalOperator>(tables[i], ReadWriteMode::READ_ONLY);
+      scan->set_qualifier(select_stmt->qualifiers()[i]);
+      table_get_oper = std::move(scan);
+    }
     if (table_oper == nullptr) {
       table_oper = std::move(table_get_oper);
     } else {
@@ -184,7 +213,8 @@ RC LogicalPlanGenerator::create_plan(FilterStmt *filter_stmt, unique_ptr<Logical
     auto left = std::move(comparison.left());
     auto right = std::move(comparison.right());
 
-    if (comparison.comp() != IS_NULL && comparison.comp() != IS_NOT_NULL &&
+    if (comparison.comp() <= GREAT_THAN && left->value_type() != AttrType::UNDEFINED &&
+        right->value_type() != AttrType::UNDEFINED &&
         left->value_type() != right->value_type() && left->value_type() != AttrType::NULLS &&
         right->value_type() != AttrType::NULLS) {
       auto left_to_right_cost = implicit_cast_cost(left->value_type(), right->value_type());
@@ -231,7 +261,8 @@ RC LogicalPlanGenerator::create_plan(FilterStmt *filter_stmt, unique_ptr<Logical
 
   unique_ptr<PredicateLogicalOperator> predicate_oper;
   if (!cmp_exprs.empty()) {
-    unique_ptr<ConjunctionExpr> conjunction_expr(new ConjunctionExpr(ConjunctionExpr::Type::AND, cmp_exprs));
+    const auto mode = filter_stmt->disjunctive() ? ConjunctionExpr::Type::OR : ConjunctionExpr::Type::AND;
+    unique_ptr<ConjunctionExpr> conjunction_expr(new ConjunctionExpr(mode, cmp_exprs));
     predicate_oper = unique_ptr<PredicateLogicalOperator>(new PredicateLogicalOperator(std::move(conjunction_expr)));
   }
 
@@ -259,7 +290,7 @@ RC LogicalPlanGenerator::create_plan(InsertStmt *insert_stmt, unique_ptr<Logical
 
 RC LogicalPlanGenerator::create_plan(UpdateStmt *update, unique_ptr<LogicalOperator> &logical_operator)
 {
-  auto update_oper = make_unique<UpdateLogicalOperator>(update->table(), update->field(), update->value());
+  auto update_oper = make_unique<UpdateLogicalOperator>(update->table(), update->values());
   auto scan = make_unique<TableGetLogicalOperator>(update->table(), ReadWriteMode::READ_WRITE);
   unique_ptr<LogicalOperator> predicate;
   RC rc = create_plan(update->filter_stmt(), predicate);

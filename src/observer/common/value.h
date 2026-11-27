@@ -15,6 +15,7 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include "common/lang/string.h"
+#include "common/lang/span.h"
 #include "common/lang/memory.h"
 #include "common/type/attr_type.h"
 #include "common/type/data_type.h"
@@ -118,6 +119,8 @@ public:
 public:
   void set_int(int val);
   void set_float(float val);
+  void set_vector(span<const float> values);
+  span<const float> get_vector() const;
   void set_string(const char *s, int len = 0);
   void set_empty_string(int len);
   void set_string_from_other(const Value &other);

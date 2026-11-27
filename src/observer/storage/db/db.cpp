@@ -32,6 +32,9 @@ using namespace common;
 
 Db::~Db()
 {
+  for (auto &[name, view] : views_) {
+    delete view.schema;
+  }
   for (auto &iter : opened_tables_) {
     delete iter.second;
   }
@@ -134,6 +137,10 @@ RC Db::init(const char *name, const char *dbpath, const char *trx_kit_name, cons
     return rc;
   }
 
+  rc = open_views();
+  if (OB_FAIL(rc)) {
+    return rc;
+  }
   rc = init_dblwr_buffer();
   if (OB_FAIL(rc)) {
     LOG_WARN("failed to init dblwr buffer. rc = %s", strrc(rc));
@@ -154,7 +161,7 @@ RC Db::create_table(const char *table_name, span<const AttrInfoSqlNode> attribut
 {
   RC rc = RC::SUCCESS;
   // check table_name
-  if (opened_tables_.count(table_name) != 0) {
+  if (opened_tables_.count(table_name) != 0 || views_.count(table_name) != 0) {
     LOG_WARN("%s has been opened before.", table_name);
     return RC::SCHEMA_TABLE_EXIST;
   }
@@ -307,6 +314,9 @@ void Db::all_tables(vector<string> &table_names) const
 {
   for (const auto &table_item : opened_tables_) {
     table_names.emplace_back(table_item.first);
+  }
+  for (const auto &item : views_) {
+    table_names.emplace_back(item.first);
   }
 }
 

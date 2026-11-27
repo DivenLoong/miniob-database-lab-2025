@@ -68,6 +68,11 @@ public:
    * @param[in] rid   删除的记录的位置
    */
   virtual RC delete_entry(const char *record, const RID *rid) = 0;
+  virtual bool same_key(const char *left, const char *right) const
+  {
+    return field_meta_.is_null(left) == field_meta_.is_null(right) &&
+        memcmp(left + field_meta_.offset(), right + field_meta_.offset(), field_meta_.len()) == 0;
+  }
 
   /**
    * @brief 创建一个索引数据的扫描器

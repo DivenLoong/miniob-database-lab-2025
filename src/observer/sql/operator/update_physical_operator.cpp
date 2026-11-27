@@ -43,9 +43,11 @@ RC UpdatePhysicalOperator::open(Trx *trx)
 
   for (Record &original : originals) {
     Record changed(original);
-    rc = table_->set_value_to_record(changed.data(), value_, field_);
-    if (OB_FAIL(rc)) {
-      return rc;
+    for (const auto &column : values_) {
+      rc = table_->set_value_to_record(changed.data(), column.value, column.field);
+      if (OB_FAIL(rc)) {
+        return rc;
+      }
     }
     rc = trx->update_record(table_, original, changed);
     if (OB_FAIL(rc)) {

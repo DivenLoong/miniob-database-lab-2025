@@ -13,6 +13,8 @@ See the Mulan PSL v2 for more details. */
 //
 
 #include "net/plain_communicator.h"
+
+#include <algorithm>
 #include "common/io/io.h"
 #include "common/log/log.h"
 #include "event/session_event.h"
@@ -34,59 +36,34 @@ RC PlainCommunicator::read_event(SessionEvent *&event)
 
   event = nullptr;
 
-  int data_len = 0;
-  int read_len = 0;
-
-  const int    max_packet_size = 8192;
-  vector<char> buf(max_packet_size);
-
-  // 持续接收消息，直到遇到'\0'。将'\0'遇到的后续数据直接丢弃没有处理，因为目前仅支持一收一发的模式
-  while (true) {
-    read_len = ::read(fd_, buf.data() + data_len, max_packet_size - data_len);
+  size_t data_len = 0;
+  constexpr size_t max_packet_size = 1024 * 1024;
+  vector<char> buf(8192);
+  for (;;) {
+    if (data_len == buf.size()) {
+      if (data_len == max_packet_size) {
+        return RC::IOERR_TOO_LONG;
+      }
+      buf.resize(std::min(max_packet_size, buf.size() * 2));
+    }
+    const ssize_t read_len = ::read(fd_, buf.data() + data_len, buf.size() - data_len);
     if (read_len < 0) {
-      if (errno == EAGAIN) {
+      if (errno == EINTR || errno == EAGAIN) {
         continue;
       }
-      break;
+      return RC::IOERR_READ;
     }
     if (read_len == 0) {
-      break;
+      return RC::IOERR_CLOSE;
     }
-
-    if (read_len + data_len > max_packet_size) {
+    if (memchr(buf.data() + data_len, '\0', read_len) != nullptr) {
       data_len += read_len;
       break;
     }
-
-    bool msg_end = false;
-    for (int i = 0; i < read_len; i++) {
-      if (buf[data_len + i] == 0) {
-        data_len += i + 1;
-        msg_end = true;
-        break;
-      }
-    }
-
-    if (msg_end) {
-      break;
-    }
-
     data_len += read_len;
   }
 
-  if (data_len > max_packet_size) {
-    LOG_WARN("The length of sql exceeds the limitation %d", max_packet_size);
-    return RC::IOERR_TOO_LONG;
-  }
-  if (read_len == 0) {
-    LOG_INFO("The peer has been closed %s", addr());
-    return RC::IOERR_CLOSE;
-  } else if (read_len < 0) {
-    LOG_ERROR("Failed to read socket of %s, %s", addr(), strerror(errno));
-    return RC::IOERR_READ;
-  }
-
-  LOG_INFO("receive command(size=%d): %s", data_len, buf.data());
+  LOG_INFO("receive command(size=%zu): %s", data_len, buf.data());
   event = new SessionEvent(this);
   event->set_query(string(buf.data()));
   return rc;

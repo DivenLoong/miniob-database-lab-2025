@@ -1,4 +1,4 @@
-/* Copyright (c) 2021OceanBase and/or its affiliates. All rights reserved.
+/* Copyright (c) 2021 OceanBase and/or its affiliates. All rights reserved.
 miniob is licensed under Mulan PSL v2.
 You can use this software according to the terms and conditions of the Mulan PSL v2.
 You may obtain a copy of Mulan PSL v2 at:
@@ -8,46 +8,71 @@ EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
 MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
-//
-// Created by Wangyunlai on 2022/5/22.
-//
-
 #include "sql/stmt/insert_stmt.h"
-#include "common/log/log.h"
+
+#include <unordered_set>
+
 #include "storage/db/db.h"
 #include "storage/table/table.h"
 
-InsertStmt::InsertStmt(Table *table, const Value *values, int value_amount)
-    : table_(table), values_(values), value_amount_(value_amount)
-{}
+InsertStmt::InsertStmt(Table *table, vector<Value> values) : table_(table), values_(std::move(values)) {}
 
-RC InsertStmt::create(Db *db, const InsertSqlNode &inserts, Stmt *&stmt)
+RC InsertStmt::create(Db *db, const InsertSqlNode &insert, Stmt *&stmt)
 {
-  const char *table_name = inserts.relation_name.c_str();
-  if (nullptr == db || nullptr == table_name || inserts.values.empty()) {
-    LOG_WARN("invalid argument. db=%p, table_name=%p, value_num=%d",
-        db, table_name, static_cast<int>(inserts.values.size()));
+  stmt = nullptr;
+  if (db == nullptr || insert.values.empty()) {
     return RC::INVALID_ARGUMENT;
   }
-
-  // check whether the table exists
-  Table *table = db->find_table(table_name);
-  if (nullptr == table) {
-    LOG_WARN("no such table. db=%s, table_name=%s", db->name(), table_name);
+  Table *table = db->find_table(insert.relation_name.c_str());
+  vector<string> provided = insert.columns;
+  const ViewDefinition *view = db->find_view(insert.relation_name);
+  if (view != nullptr) {
+    if (view->write_table.empty()) {
+      return RC::UNSUPPORTED;
+    }
+    table = db->find_table(view->write_table.c_str());
+    if (provided.empty()) {
+      for (int i = 0; i < view->schema->table_meta().field_num(); ++i) {
+        provided.emplace_back(view->schema->table_meta().field(i)->name());
+      }
+    }
+    for (string &column : provided) {
+      column = db->view_write_column(*view, column);
+      if (column.empty()) {
+        return RC::SCHEMA_FIELD_NOT_EXIST;
+      }
+    }
+  }
+  if (table == nullptr) {
     return RC::SCHEMA_TABLE_NOT_EXIST;
   }
 
-  // check the fields number
-  const Value     *values     = inserts.values.data();
-  const int        value_num  = static_cast<int>(inserts.values.size());
-  const TableMeta &table_meta = table->table_meta();
-  const int        field_num  = table_meta.field_num() - table_meta.sys_field_num();
-  if (field_num != value_num) {
-    LOG_WARN("schema mismatch. value num=%d, field num in schema=%d", value_num, field_num);
+  const auto &metadata = table->table_meta();
+  const int offset = metadata.sys_field_num();
+  const size_t field_count = metadata.field_num() - offset;
+  if (provided.empty()) {
+    if (field_count != insert.values.size()) {
+      return RC::SCHEMA_FIELD_MISSING;
+    }
+    stmt = new InsertStmt(table, insert.values);
+    return RC::SUCCESS;
+  }
+  if (provided.size() != insert.values.size()) {
     return RC::SCHEMA_FIELD_MISSING;
   }
 
-  // everything alright
-  stmt = new InsertStmt(table, values, value_num);
+  vector<Value> values(field_count);
+  for (Value &value : values) {
+    value.set_null();
+  }
+  std::unordered_set<int> seen;
+  for (size_t i = 0; i < provided.size(); ++i) {
+    const FieldMeta *field = metadata.field(provided[i].c_str());
+    if (field == nullptr || !field->visible() || !seen.insert(field->field_id()).second) {
+      return RC::SCHEMA_FIELD_NOT_EXIST;
+    }
+    values[field->field_id()] = insert.values[i];
+  }
+  stmt = new InsertStmt(table, std::move(values));
   return RC::SUCCESS;
 }

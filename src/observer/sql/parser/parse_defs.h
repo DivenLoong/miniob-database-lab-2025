@@ -53,6 +53,10 @@ enum CompOp
   GREAT_THAN,   ///< ">"
   IS_NULL,
   IS_NOT_NULL,
+  IN_SUBQUERY,
+  NOT_IN_SUBQUERY,
+  EXISTS_SUBQUERY,
+  NOT_EXISTS_SUBQUERY,
   NO_OP
 };
 
@@ -68,6 +72,7 @@ struct ConditionSqlNode
 {
   shared_ptr<Expression> left_expression;
   shared_ptr<Expression> right_expression;
+  bool disjunctive = false;
   int left_is_attr;              ///< TRUE if left-hand side is an attribute
                                  ///< 1时，操作符左边是属性名，0时，是属性值
   Value          left_value;     ///< left-hand side value if left_is_attr = FALSE
@@ -90,9 +95,15 @@ struct ConditionSqlNode
  * 甚至可以包含复杂的表达式。
  */
 
+struct RelationSqlNode
+{
+  string name;
+  string alias;
+};
+
 struct FromSqlNode
 {
-  vector<string> relations;
+  vector<RelationSqlNode> relations;
   vector<ConditionSqlNode> conditions;
 };
 
@@ -105,7 +116,7 @@ struct OrderBySqlNode
 struct SelectSqlNode
 {
   vector<unique_ptr<Expression>> expressions;  ///< 查询的表达式
-  vector<string>                 relations;    ///< 查询的表
+  vector<RelationSqlNode>        relations;    ///< 查询的表
   vector<ConditionSqlNode>       conditions;   ///< 查询条件，使用AND串联起来多个条件
   vector<ConditionSqlNode>       having;
   vector<OrderBySqlNode>        order_by;
@@ -131,6 +142,7 @@ struct InsertSqlNode
 {
   string        relation_name;  ///< Relation to insert into
   vector<Value> values;         ///< 要插入的值
+  vector<string> columns;
 };
 
 /**
@@ -147,11 +159,16 @@ struct DeleteSqlNode
  * @brief 描述一个update语句
  * @ingroup SQLParser
  */
+struct UpdateAssignmentSqlNode
+{
+  string name;
+  Value value;
+};
+
 struct UpdateSqlNode
 {
   string                   relation_name;   ///< Relation to update
-  string                   attribute_name;  ///< 更新的字段，仅支持一个字段
-  Value                    value;           ///< 更新的值，仅支持一个字段
+  vector<UpdateAssignmentSqlNode> assignments;
   vector<ConditionSqlNode> conditions;
 };
 
@@ -166,6 +183,7 @@ struct AttrInfoSqlNode
   string   name;    ///< Attribute name
   size_t   length;  ///< Length of attribute
   bool nullable = false;
+  bool nullable_explicit = false;
 };
 
 /**
@@ -173,6 +191,23 @@ struct AttrInfoSqlNode
  * @ingroup SQLParser
  * @details 这里也做了很多简化。
  */
+struct CreateViewSqlNode
+{
+  string name;
+  string query;
+  vector<string> columns;
+};
+
+struct AlterTableSqlNode
+{
+  enum class Operation { ADD, DROP, CHANGE, RENAME };
+  Operation operation = Operation::ADD;
+  string table_name;
+  string old_column;
+  string new_table;
+  AttrInfoSqlNode column{};
+};
+
 struct CreateTableSqlNode
 {
   string                  relation_name;  ///< Relation name
@@ -211,7 +246,9 @@ struct CreateIndexSqlNode
 {
   string index_name;      ///< Index name
   string relation_name;   ///< Relation name
-  string attribute_name;  ///< Attribute name
+  vector<string> attributes;
+  bool unique = false;
+  bool full_text = false;
 };
 
 /**
@@ -312,6 +349,10 @@ enum SqlCommandFlag
   SCF_HELP,
   SCF_EXIT,
   SCF_EXPLAIN,
+  SCF_UNION,
+  SCF_ALTER_TABLE,
+  SCF_CREATE_VIEW,
+  SCF_DROP_VIEW,
   SCF_SET_VARIABLE,  ///< 设置变量
 };
 /**
@@ -325,10 +366,15 @@ public:
   ErrorSqlNode        error;
   CalcSqlNode         calc;
   SelectSqlNode       selection;
+  unique_ptr<ParsedSqlNode> union_left;
+  unique_ptr<ParsedSqlNode> union_right;
+  bool union_all = false;
   InsertSqlNode       insertion;
   DeleteSqlNode       deletion;
   UpdateSqlNode       update;
   CreateTableSqlNode  create_table;
+  AlterTableSqlNode   alter_table;
+  CreateViewSqlNode   create_view;
   DropTableSqlNode    drop_table;
   AnalyzeTableSqlNode analyze_table;
   CreateIndexSqlNode  create_index;

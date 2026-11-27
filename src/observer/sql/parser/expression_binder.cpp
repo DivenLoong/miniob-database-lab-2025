@@ -18,29 +18,39 @@ See the Mulan PSL v2 for more details. */
 #include "sql/parser/expression_binder.h"
 #include "sql/expr/expression_iterator.h"
 #include "sql/expr/scalar_function_expr.h"
+#include "sql/expr/subquery_expr.h"
 
 using namespace common;
 
-Table *BinderContext::find_table(const char *table_name) const
+RC BinderContext::add_table(Table *table, string qualifier)
 {
-  auto pred = [table_name](Table *table) { return 0 == strcasecmp(table_name, table->name()); };
-  auto iter = ranges::find_if(query_tables_, pred);
-  if (iter == query_tables_.end()) {
-    return nullptr;
+  if (qualifier.empty()) {
+    qualifier = table->name();
   }
-  return *iter;
+  if (find_table(qualifier.c_str()) != nullptr) {
+    return RC::INVALID_ARGUMENT;
+  }
+  bindings_.push_back({table, std::move(qualifier)});
+  return RC::SUCCESS;
 }
 
-////////////////////////////////////////////////////////////////////////////////
-static void wildcard_fields(Table *table, vector<unique_ptr<Expression>> &expressions)
+const BinderContext::Binding *BinderContext::find_table(const char *qualifier) const
 {
-  const TableMeta &table_meta = table->table_meta();
-  const int        field_num  = table_meta.field_num();
-  for (int i = table_meta.sys_field_num(); i < field_num; i++) {
-    Field      field(table, table_meta.field(i));
-    FieldExpr *field_expr = new FieldExpr(field);
-    field_expr->set_name(field.field_name());
-    expressions.emplace_back(field_expr);
+  auto found = ranges::find_if(bindings_, [qualifier](const Binding &binding) {
+    return strcasecmp(qualifier, binding.qualifier.c_str()) == 0;
+  });
+  return found == bindings_.end() ? nullptr : &*found;
+}
+
+static void wildcard_fields(const BinderContext::Binding &binding, vector<unique_ptr<Expression>> &expressions)
+{
+  const auto &metadata = binding.table->table_meta();
+  for (int i = metadata.sys_field_num(); i < metadata.field_num(); ++i) {
+    const FieldMeta *field = metadata.field(i);
+    auto expression = make_unique<FieldExpr>(binding.table, field);
+    expression->set_qualifier(binding.qualifier);
+    expression->set_name(field->name());
+    expressions.emplace_back(std::move(expression));
   }
 }
 
@@ -87,6 +97,14 @@ RC ExpressionBinder::bind_expression(unique_ptr<Expression> &expr, vector<unique
       return bind_arithmetic_expression(expr, bound_expressions);
     } break;
 
+    case ExprType::SUBQUERY: {
+      auto &subquery = static_cast<SubqueryExpr &>(*expr);
+      RC rc = subquery.bind(context_);
+      if (OB_SUCC(rc)) {
+        bound_expressions.emplace_back(std::move(expr));
+      }
+      return rc;
+    }
     case ExprType::SCALAR_FUNCTION: {
       auto &function = static_cast<ScalarFunctionExpr &>(*expr);
       RC rc = RC::SUCCESS;
@@ -128,24 +146,17 @@ RC ExpressionBinder::bind_star_expression(
 
   auto star_expr = static_cast<StarExpr *>(expr.get());
 
-  vector<Table *> tables_to_wildcard;
-
   const char *table_name = star_expr->table_name();
   if (!is_blank(table_name) && 0 != strcmp(table_name, "*")) {
-    Table *table = context_.find_table(table_name);
-    if (nullptr == table) {
-      LOG_INFO("no such table in from list: %s", table_name);
+    const BinderContext::Binding *binding = context_.find_table(table_name);
+    if (binding == nullptr) {
       return RC::SCHEMA_TABLE_NOT_EXIST;
     }
-
-    tables_to_wildcard.push_back(table);
+    wildcard_fields(*binding, bound_expressions);
   } else {
-    const vector<Table *> &all_tables = context_.query_tables();
-    tables_to_wildcard.insert(tables_to_wildcard.end(), all_tables.begin(), all_tables.end());
-  }
-
-  for (Table *table : tables_to_wildcard) {
-    wildcard_fields(table, bound_expressions);
+    for (const auto &binding : context_.bindings()) {
+      wildcard_fields(binding, bound_expressions);
+    }
   }
 
   return RC::SUCCESS;
@@ -163,43 +174,48 @@ RC ExpressionBinder::bind_unbound_field_expression(
   const char *table_name = unbound_field_expr->table_name();
   const char *field_name = unbound_field_expr->field_name();
 
-  Table *table = nullptr;
-  if (is_blank(table_name)) {
-    for (Table *candidate : context_.query_tables()) {
-      const FieldMeta *field = candidate->table_meta().field(field_name);
-      if (field != nullptr && field->visible()) {
-        if (table != nullptr) {
-          return RC::SCHEMA_FIELD_MISSING;
+  const BinderContext::Binding *binding = nullptr;
+  int depth = 0;
+  for (const BinderContext *context = &context_; context != nullptr; context = context->outer(), ++depth) {
+    if (is_blank(table_name)) {
+      for (const auto &candidate : context->bindings()) {
+        const FieldMeta *field = candidate.table->table_meta().field(field_name);
+        if (field != nullptr && field->visible()) {
+          if (binding != nullptr) {
+            return RC::SCHEMA_FIELD_MISSING;
+          }
+          binding = &candidate;
         }
-        table = candidate;
       }
+    } else {
+      binding = context->find_table(table_name);
     }
-    if (table == nullptr) {
-      return RC::SCHEMA_FIELD_MISSING;
-    }
-  } else {
-    table = context_.find_table(table_name);
-    if (nullptr == table) {
-      LOG_INFO("no such table in from list: %s", table_name);
-      return RC::SCHEMA_TABLE_NOT_EXIST;
+    if (binding != nullptr) {
+      break;
     }
   }
-
-  if (0 == strcmp(field_name, "*")) {
-    wildcard_fields(table, bound_expressions);
-  } else {
-    const FieldMeta *field_meta = table->table_meta().field(field_name);
-    if (nullptr == field_meta) {
-      LOG_INFO("no such field in table: %s.%s", table_name, field_name);
-      return RC::SCHEMA_FIELD_MISSING;
-    }
-
-    Field      field(table, field_meta);
-    FieldExpr *field_expr = new FieldExpr(field);
-    field_expr->set_name(field_name);
-    field_expr->set_alias(unbound_field_expr->alias());
-    bound_expressions.emplace_back(field_expr);
+  if (binding == nullptr) {
+    return RC::SCHEMA_FIELD_MISSING;
   }
+
+  const FieldMeta *field = binding->table->table_meta().field(field_name);
+  if (field == nullptr || !field->visible()) {
+    return RC::SCHEMA_FIELD_MISSING;
+  }
+  unique_ptr<FieldExpr> bound;
+  if (depth == 0) {
+    bound = make_unique<FieldExpr>(binding->table, field);
+  } else {
+    context_.mark_outer_reference(depth);
+    bound = make_unique<OuterFieldExpr>(binding->table, field, depth);
+  }
+  bound->set_qualifier(binding->qualifier);
+  bound->set_name(field_name);
+  if (!is_blank(table_name) && strcasecmp(binding->table->name(), binding->qualifier.c_str()) != 0) {
+    bound->set_name(binding->qualifier + "." + field_name);
+  }
+  bound->set_alias(unbound_field_expr->alias());
+  bound_expressions.emplace_back(std::move(bound));
 
   return RC::SUCCESS;
 }

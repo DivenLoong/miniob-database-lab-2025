@@ -10,6 +10,8 @@ See the Mulan PSL v2 for more details. */
 
 #include "sql/stmt/update_stmt.h"
 
+#include <unordered_set>
+
 #include "storage/db/db.h"
 #include "storage/table/table.h"
 
@@ -20,31 +22,49 @@ RC UpdateStmt::create(Db *db, const UpdateSqlNode &update, Stmt *&stmt)
     return RC::INVALID_ARGUMENT;
   }
   Table *table = db->find_table(update.relation_name.c_str());
-  if (table == nullptr) {
-    return RC::SCHEMA_TABLE_NOT_EXIST;
-  }
-  const FieldMeta *field = table->table_meta().field(update.attribute_name.c_str());
-  if (field == nullptr || !field->visible()) {
-    return RC::SCHEMA_FIELD_NOT_EXIST;
-  }
-
-  Value value = update.value;
-  if (value.is_null() && !field->nullable()) {
-    return RC::SCHEMA_FIELD_TYPE_MISMATCH;
-  }
-  if (!value.is_null() && value.attr_type() != field->type()) {
-    RC rc = Value::cast_to(update.value, field->type(), value);
+  const ViewDefinition *view = db->find_view(update.relation_name);
+  vector<ConditionSqlNode> conditions;
+  if (view != nullptr) {
+    RC rc = db->view_write_conditions(*view, update.conditions, conditions);
     if (OB_FAIL(rc)) {
       return rc;
     }
+    table = db->find_table(view->write_table.c_str());
+  } else {
+    conditions = update.conditions;
+  }
+  if (table == nullptr) {
+    return RC::SCHEMA_TABLE_NOT_EXIST;
   }
 
-  unordered_map<string, Table *> tables{{update.relation_name, table}};
+  vector<UpdateColumnValue> values;
+  std::unordered_set<int> selected;
+  for (const auto &assignment : update.assignments) {
+    const string name = view == nullptr ? assignment.name : db->view_write_column(*view, assignment.name);
+    const FieldMeta *field = table->table_meta().field(name.c_str());
+    if (field == nullptr || !field->visible() || !selected.insert(field->field_id()).second) {
+      return RC::SCHEMA_FIELD_NOT_EXIST;
+    }
+    Value value = assignment.value;
+    if (value.is_null() && !field->nullable()) {
+      return RC::SCHEMA_FIELD_TYPE_MISMATCH;
+    }
+    if (!value.is_null() && value.attr_type() != field->type() &&
+        !(field->type() == AttrType::TEXTS && value.attr_type() == AttrType::CHARS)) {
+      RC rc = Value::cast_to(assignment.value, field->type(), value);
+      if (OB_FAIL(rc)) {
+        return rc;
+      }
+    }
+    values.push_back({field, std::move(value)});
+  }
+
+  unordered_map<string, Table *> tables{{table->name(), table}};
   FilterStmt *filter = nullptr;
-  RC rc = FilterStmt::create(db, table, &tables, update.conditions.data(), update.conditions.size(), filter);
+  RC rc = FilterStmt::create(db, table, &tables, conditions.data(), conditions.size(), filter);
   if (OB_FAIL(rc)) {
     return rc;
   }
-  stmt = new UpdateStmt(table, field, std::move(value), unique_ptr<FilterStmt>(filter));
+  stmt = new UpdateStmt(table, std::move(values), unique_ptr<FilterStmt>(filter));
   return RC::SUCCESS;
 }

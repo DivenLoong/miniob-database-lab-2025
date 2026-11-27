@@ -95,7 +95,9 @@ public:
   RC get_record(const RID &rid, Record &record);
 
   // TODO refactor
-  RC create_index(Trx *trx, const FieldMeta *field_meta, const char *index_name);
+  RC create_index(Trx *trx, const vector<const FieldMeta *> &fields, const char *index_name, bool unique, bool full_text = false);
+  RC create_index(Trx *trx, const FieldMeta *field, const char *index_name) { return create_index(trx, {field}, index_name, false); }
+  RC drop_index(const char *name);
 
   RC get_record_scanner(RecordScanner *&scanner, Trx *trx, ReadWriteMode mode);
 
@@ -123,6 +125,8 @@ public:
   RC sync();
 
   RC set_value_to_record(char *record_data, const Value &value, const FieldMeta *field);
+  RC read_value(const FieldMeta &field, const char *record, Value &value) const;
+  RC init_view_schema(Db *db, const string &name, const vector<AttrInfoSqlNode> &attributes);
 
 private:
   // RC init_record_handler(const char *base_dir);
@@ -130,6 +134,7 @@ private:
 public:
   Index *find_index(const char *index_name) const;
   Index *find_index_by_field(const char *field_name) const;
+  Index *find_full_text(const char *field_name) const;
 
 private:
   Db       *db_ = nullptr;
@@ -138,5 +143,6 @@ private:
   // RecordFileHandler *record_handler_   = nullptr;  /// 记录操作
   // vector<Index *>    indexes_;
   unique_ptr<TableEngine> engine_      = nullptr;
+  RC init_lob(const char *directory, bool create);
   LobFileHandler         *lob_handler_ = nullptr;
 };

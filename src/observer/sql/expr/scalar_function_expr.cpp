@@ -13,12 +13,41 @@ See the Mulan PSL v2 for more details. */
 #include <algorithm>
 #include <cmath>
 
+#include "storage/index/full_text_index.h"
+#include "storage/table/table.h"
+
+namespace {
+bool is_vector_parse(const char *name)
+{
+  return strcasecmp(name, "string_to_vector") == 0 || strcasecmp(name, "to_vector") == 0;
+}
+bool is_vector_format(const char *name)
+{
+  return strcasecmp(name, "vector_to_string") == 0 || strcasecmp(name, "from_vector") == 0;
+}
+bool is_vector_distance(const char *name)
+{
+  return strcasecmp(name, "distance") == 0 || strcasecmp(name, "vector_distance") == 0;
+}
+}
+
+bool ScalarFunctionExpr::supports(const char *name)
+{
+  return strcasecmp(name, "length") == 0 || strcasecmp(name, "round") == 0 || strcasecmp(name, "date_format") == 0 || strcasecmp(name, "tokenize") == 0 ||
+      is_vector_parse(name) || is_vector_format(name) || is_vector_distance(name);
+}
+
 AttrType ScalarFunctionExpr::value_type() const
 {
   if (strcasecmp(function_.c_str(), "length") == 0) {
     return AttrType::INTS;
   }
-  return strcasecmp(function_.c_str(), "round") == 0 ? AttrType::FLOATS : AttrType::CHARS;
+  if (is_vector_parse(function_.c_str())) {
+    return AttrType::VECTORS;
+  }
+  return strcasecmp(function_.c_str(), "round") == 0 || strcasecmp(function_.c_str(), "match") == 0 ||
+      is_vector_distance(function_.c_str()) ?
+      AttrType::FLOATS : AttrType::CHARS;
 }
 
 RC ScalarFunctionExpr::validate_arguments() const
@@ -27,6 +56,25 @@ RC ScalarFunctionExpr::validate_arguments() const
   const auto accepts = [&](size_t index, AttrType type) {
     return arguments_[index]->value_type() == type || arguments_[index]->value_type() == AttrType::NULLS;
   };
+  if (strcasecmp(function_.c_str(), "tokenize") == 0) {
+    return count == 2 && accepts(0, AttrType::CHARS) && accepts(1, AttrType::CHARS) ?
+        RC::SUCCESS : RC::SCHEMA_FIELD_TYPE_MISMATCH;
+  }
+  if (strcasecmp(function_.c_str(), "match") == 0) {
+    return count == 2 && arguments_[0]->type() == ExprType::FIELD &&
+        accepts(0, AttrType::CHARS) && accepts(1, AttrType::CHARS) ?
+        RC::SUCCESS : RC::SCHEMA_FIELD_TYPE_MISMATCH;
+  }
+  if (is_vector_distance(function_.c_str())) {
+    return count == 3 && accepts(0, AttrType::VECTORS) && accepts(1, AttrType::VECTORS) &&
+        accepts(2, AttrType::CHARS) ? RC::SUCCESS : RC::SCHEMA_FIELD_TYPE_MISMATCH;
+  }
+  if (is_vector_parse(function_.c_str())) {
+    return count == 1 && accepts(0, AttrType::CHARS) ? RC::SUCCESS : RC::SCHEMA_FIELD_TYPE_MISMATCH;
+  }
+  if (is_vector_format(function_.c_str())) {
+    return count == 1 && accepts(0, AttrType::VECTORS) ? RC::SUCCESS : RC::SCHEMA_FIELD_TYPE_MISMATCH;
+  }
   switch (value_type()) {
     case AttrType::INTS:
       return count == 1 && accepts(0, AttrType::CHARS) ? RC::SUCCESS : RC::SCHEMA_FIELD_TYPE_MISMATCH;
@@ -82,6 +130,90 @@ RC ScalarFunctionExpr::evaluate(const vector<Value> &args, Value &result) const
       result.set_null();
       return RC::SUCCESS;
     }
+  }
+
+  if (strcasecmp(function_.c_str(), "tokenize") == 0) {
+    if (strcasecmp(args[1].get_string().c_str(), "jieba") != 0) {
+      return RC::INVALID_ARGUMENT;
+    }
+    vector<string> tokens;
+    RC rc = FullTextIndex::tokenize(args[0].get_string(), tokens);
+    if (OB_FAIL(rc)) {
+      return rc;
+    }
+    string output = "[";
+    for (size_t i = 0; i < tokens.size(); ++i) {
+      if (i != 0) {
+        output += ", ";
+      }
+      output += '"';
+      for (char character : tokens[i]) {
+        if (character == '"' || character == '\\') {
+          output += '\\';
+        }
+        output += character;
+      }
+      output += '"';
+    }
+    output += ']';
+    result.set_string(output.c_str(), output.size());
+    return RC::SUCCESS;
+  }
+  if (strcasecmp(function_.c_str(), "match") == 0) {
+    const FieldExpr &field = static_cast<const FieldExpr &>(*arguments_[0]);
+    auto *index = static_cast<FullTextIndex *>(field.field().table()->find_full_text(field.field_name()));
+    if (index == nullptr) {
+      return RC::NOTFOUND;
+    }
+    float score = 0;
+    RC rc = index->score(args[0].get_string(), args[1].get_string(), score);
+    if (OB_SUCC(rc)) {
+      result.set_float(score);
+    }
+    return rc;
+  }
+  if (is_vector_parse(function_.c_str())) {
+    return Value::cast_to(args[0], AttrType::VECTORS, result);
+  }
+  if (is_vector_format(function_.c_str())) {
+    const string formatted = args[0].get_string();
+    result.set_string(formatted.c_str(), formatted.size());
+    return RC::SUCCESS;
+  }
+  if (is_vector_distance(function_.c_str())) {
+    const auto left = args[0].get_vector();
+    const auto right = args[1].get_vector();
+    if (left.empty() || left.size() != right.size()) {
+      return RC::INVALID_ARGUMENT;
+    }
+    double product = 0.0;
+    double squared_a = 0.0;
+    double squared_b = 0.0;
+    double squared_distance = 0.0;
+    for (size_t i = 0; i < left.size(); ++i) {
+      const double a = left[i];
+      const double b = right[i];
+      product += a * b;
+      squared_a += a * a;
+      squared_b += b * b;
+      squared_distance += (a - b) * (a - b);
+    }
+    const string metric = args[2].get_string();
+    if (strcasecmp(metric.c_str(), "DOT") == 0) {
+      result.set_float(product);
+    } else if (strcasecmp(metric.c_str(), "EUCLIDEAN") == 0) {
+      result.set_float(std::sqrt(squared_distance));
+    } else if (strcasecmp(metric.c_str(), "COSINE") == 0) {
+      if (squared_a == 0.0 || squared_b == 0.0) {
+        result.set_null();
+      } else {
+        const double similarity = std::clamp(product / std::sqrt(squared_a * squared_b), -1.0, 1.0);
+        result.set_float(1.0 - similarity);
+      }
+    } else {
+      return RC::INVALID_ARGUMENT;
+    }
+    return RC::SUCCESS;
   }
 
   if (value_type() == AttrType::INTS) {

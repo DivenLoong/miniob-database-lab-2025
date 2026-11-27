@@ -27,6 +27,10 @@ See the Mulan PSL v2 for more details. */
 #include "sql/executor/trx_end_executor.h"
 #include "sql/stmt/stmt.h"
 #include "sql/stmt/drop_table_stmt.h"
+#include "sql/stmt/drop_index_stmt.h"
+#include "sql/stmt/alter_table_stmt.h"
+#include "sql/stmt/view_ddl_stmt.h"
+#include "storage/table/table.h"
 
 RC CommandExecutor::execute(SQLStageEvent *sql_event)
 {
@@ -34,11 +38,27 @@ RC CommandExecutor::execute(SQLStageEvent *sql_event)
 
   RC rc = RC::SUCCESS;
   switch (stmt->type()) {
+    case StmtType::DROP_INDEX: {
+      const auto &drop = static_cast<DropIndexStmt &>(*stmt).node();
+      Db *db = sql_event->session_event()->session()->get_current_db();
+      Table *table = db->find_table(drop.relation_name.c_str());
+      rc = table == nullptr ? RC::SCHEMA_TABLE_NOT_EXIST : table->drop_index(drop.index_name.c_str());
+    } break;
     case StmtType::CREATE_INDEX: {
       CreateIndexExecutor executor;
       rc = executor.execute(sql_event);
     } break;
 
+    case StmtType::CREATE_VIEW:
+    case StmtType::DROP_VIEW: {
+      const auto &view = static_cast<ViewDdlStmt &>(*stmt);
+      Db *db = sql_event->session_event()->session()->get_current_db();
+      rc = view.type() == StmtType::CREATE_VIEW ? db->create_view(view.node()) : db->drop_view(view.node().name);
+    } break;
+    case StmtType::ALTER_TABLE: {
+      const auto &alter = static_cast<AlterTableStmt &>(*stmt);
+      rc = sql_event->session_event()->session()->get_current_db()->alter_table(alter.node());
+    } break;
     case StmtType::DROP_TABLE: {
       const auto &drop = static_cast<DropTableStmt &>(*stmt);
       rc = sql_event->session_event()->session()->get_current_db()->drop_table(drop.table_name().c_str());

@@ -31,8 +31,10 @@ static const Json::StaticString FIELD_PRIMARY_KEYS("primary_keys");
 TableMeta::TableMeta(const TableMeta &other)
     : table_id_(other.table_id_),
       name_(other.name_),
+      trx_fields_(other.trx_fields_),
       fields_(other.fields_),
       indexes_(other.indexes_),
+      primary_keys_(other.primary_keys_),
       storage_format_(other.storage_format_),
       storage_engine_(other.storage_engine_),
       record_size_(other.record_size_)
@@ -82,19 +84,33 @@ RC TableMeta::init(int32_t table_id, const char *name, const vector<FieldMeta> *
 
   for (size_t i = 0; i < attributes.size(); i++) {
     const AttrInfoSqlNode &attr_info = attributes[i];
-    // `i` is the col_id of fields[i]
+    int field_len = attr_info.length;
+    if (attr_info.type == AttrType::TEXTS || attr_info.type == AttrType::VECTORS) {
+      if (storage_format != StorageFormat::ROW_FORMAT || storage_engine != StorageEngine::HEAP) {
+        return RC::UNSUPPORTED;
+      }
+      if (attr_info.type == AttrType::VECTORS && (attr_info.length == 0 || attr_info.length > 16383)) {
+        return RC::INVALID_ARGUMENT;
+      }
+      field_len = sizeof(int64_t) * 2;
+    }
+    // column ids are zero-based among user columns
     rc = fields_[i + trx_field_num].init(
-      attr_info.name.c_str(), attr_info.type, field_offset, attr_info.length, true /*visible*/, i);
+      attr_info.name.c_str(), attr_info.type, field_offset, field_len, true /*visible*/, i);
     if (OB_FAIL(rc)) {
       LOG_ERROR("Failed to init field meta. table name=%s, field name: %s", name, attr_info.name.c_str());
       return rc;
     }
 
-    fields_[i + trx_field_num].set_nullable(attr_info.nullable);
-    if (attr_info.nullable && (storage_format != StorageFormat::ROW_FORMAT || storage_engine != StorageEngine::HEAP)) {
+    const bool supports_null = storage_format == StorageFormat::ROW_FORMAT && storage_engine == StorageEngine::HEAP;
+    if (attr_info.nullable && attr_info.nullable_explicit && !supports_null) {
       return RC::UNSUPPORTED;
     }
-    field_offset += attr_info.length;
+    fields_[i + trx_field_num].set_nullable(attr_info.nullable && supports_null);
+    if (attr_info.type == AttrType::VECTORS) {
+      fields_[i + trx_field_num].set_vector_dimension(static_cast<int>(attr_info.length));
+    }
+    field_offset += field_len;
   }
 
   primary_keys_ = primary_keys;
@@ -125,6 +141,11 @@ RC TableMeta::add_index(const IndexMeta &index)
 {
   indexes_.push_back(index);
   return RC::SUCCESS;
+}
+
+void TableMeta::remove_index(const char *name)
+{
+  std::erase_if(indexes_, [&](const IndexMeta &index) { return strcmp(index.name(), name) == 0; });
 }
 
 const char *TableMeta::name() const { return name_.c_str(); }
@@ -176,7 +197,7 @@ const IndexMeta *TableMeta::index(const char *name) const
 const IndexMeta *TableMeta::find_index_by_field(const char *field) const
 {
   for (const IndexMeta &index : indexes_) {
-    if (0 == strcmp(index.field(), field)) {
+    if (!index.full_text() && 0 == strcmp(index.field(), field)) {
       return &index;
     }
   }

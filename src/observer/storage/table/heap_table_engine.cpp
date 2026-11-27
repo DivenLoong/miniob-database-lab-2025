@@ -9,9 +9,13 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #include "storage/table/heap_table_engine.h"
+
+#include <algorithm>
+#include <unistd.h>
 #include "storage/record/heap_record_scanner.h"
 #include "common/log/log.h"
 #include "storage/index/bplus_tree_index.h"
+#include "storage/index/full_text_index.h"
 #include "storage/common/meta_util.h"
 #include "storage/db/db.h"
 
@@ -47,12 +51,7 @@ RC HeapTableEngine::insert_record(Record &record)
 
   rc = insert_entry_of_indexes(record.data(), record.rid());
   if (rc != RC::SUCCESS) {  // 可能出现了键值重复
-    RC rc2 = delete_entry_of_indexes(record.data(), record.rid(), false /*error_on_not_exists*/);
-    if (rc2 != RC::SUCCESS) {
-      LOG_ERROR("Failed to rollback index data when insert index entries failed. table name=%s, rc=%d:%s",
-                table_meta_->name(), rc2, strrc(rc2));
-    }
-    rc2 = record_handler_->delete_record(&record.rid());
+    RC rc2 = record_handler_->delete_record(&record.rid());
     if (rc2 != RC::SUCCESS) {
       LOG_PANIC("Failed to rollback record data when insert index entries failed. table name=%s, rc=%d:%s",
                 table_meta_->name(), rc2, strrc(rc2));
@@ -94,18 +93,21 @@ RC HeapTableEngine::update_record(const Record &original, const Record &changed)
 {
   const RID &rid = original.rid();
   vector<Index *> changed_indexes;
+  vector<Index *> changed_full_text;
   RC rc = RC::SUCCESS;
   for (Index *index : indexes_) {
-    const FieldMeta *field = table_meta_->field(index->index_meta().field());
-    if (field->is_null(original.data()) == field->is_null(changed.data()) &&
-        memcmp(original.data() + field->offset(), changed.data() + field->offset(), field->len()) == 0) {
+    if (index->same_key(original.data(), changed.data())) {
       continue;
     }
     rc = index->insert_entry(changed.data(), &rid);
     if (OB_FAIL(rc)) {
       break;
     }
-    changed_indexes.push_back(index);
+    if (index->index_meta().full_text()) {
+      changed_full_text.push_back(index);
+    } else {
+      changed_indexes.push_back(index);
+    }
   }
 
   size_t removed = 0;
@@ -124,6 +126,12 @@ RC HeapTableEngine::update_record(const Record &original, const Record &changed)
     });
   }
   if (OB_FAIL(rc)) {
+    for (Index *index : changed_full_text) {
+      RC undo = index->insert_entry(original.data(), &rid);
+      if (OB_FAIL(undo)) {
+        LOG_ERROR("failed to restore full-text index: %s", strrc(undo));
+      }
+    }
     for (Index *index : changed_indexes) {
       RC undo = index->delete_entry(changed.data(), &rid);
       if (OB_FAIL(undo)) {
@@ -172,129 +180,136 @@ RC HeapTableEngine::get_chunk_scanner(ChunkFileScanner &scanner, Trx *trx, ReadW
   return rc;
 }
 
-RC HeapTableEngine::create_index(Trx *trx, const FieldMeta *field_meta, const char *index_name)
+RC HeapTableEngine::create_index(Trx *trx, const vector<const FieldMeta *> &fields, const char *index_name, bool unique, bool full_text)
 {
-  if (common::is_blank(index_name) || nullptr == field_meta) {
-    LOG_INFO("Invalid input arguments, table name is %s, index_name is blank or attribute_name is blank", table_meta_->name());
+  if (fields.empty() || fields.front() == nullptr || find_index(index_name) != nullptr) {
     return RC::INVALID_ARGUMENT;
   }
-
   IndexMeta new_index_meta;
-
-  RC rc = new_index_meta.init(index_name, *field_meta);
-  if (rc != RC::SUCCESS) {
-    LOG_INFO("Failed to init IndexMeta in table:%s, index_name:%s, field_name:%s", 
-             table_meta_->name(), index_name, field_meta->name());
+  RC rc = new_index_meta.init(index_name, fields, unique);
+  if (OB_FAIL(rc)) {
     return rc;
   }
 
-  // 创建索引相关数据
-  BplusTreeIndex *index      = new BplusTreeIndex();
-  string          index_file = table_index_file(db_->path().c_str(), table_meta_->name(), index_name);
-
-  rc = index->create(table_, index_file.c_str(), new_index_meta, *field_meta);
-  if (rc != RC::SUCCESS) {
-    delete index;
-    LOG_ERROR("Failed to create bplus tree index. file name=%s, rc=%d:%s", index_file.c_str(), rc, strrc(rc));
+  if (full_text && (fields.size() != 1 || unique || table_meta_->sys_field_num() != 0)) {
+    return RC::UNSUPPORTED;
+  }
+  new_index_meta.set_full_text(full_text);
+  unique_ptr<Index> index;
+  if (full_text) {
+    index = make_unique<FullTextIndex>();
+  } else {
+    index = make_unique<BplusTreeIndex>();
+  }
+  const string index_file = table_index_file(db_->path().c_str(), table_meta_->name(), index_name);
+  rc = index->create(table_, index_file.c_str(), new_index_meta, *fields.front());
+  if (OB_FAIL(rc)) {
     return rc;
   }
 
-  // 遍历当前的所有数据，插入这个索引
-  RecordScanner *scanner = nullptr;
-  rc = get_record_scanner(scanner, trx, ReadWriteMode::READ_ONLY);
-  if (rc != RC::SUCCESS) {
-    LOG_WARN("failed to create scanner while creating index. table=%s, index=%s, rc=%s", 
-             table_meta_->name(), index_name, strrc(rc));
-    return rc;
-  }
-
-  Record record;
-  while (OB_SUCC(rc = scanner->next(record))) {
-    rc = index->insert_entry(record.data(), &record.rid());
-    if (rc != RC::SUCCESS) {
-      LOG_WARN("failed to insert record into index while creating index. table=%s, index=%s, rc=%s",
-               table_meta_->name(), index_name, strrc(rc));
-      return rc;
+  RecordScanner *raw_scanner = nullptr;
+  rc = get_record_scanner(raw_scanner, trx, ReadWriteMode::READ_ONLY);
+  unique_ptr<RecordScanner> scanner(raw_scanner);
+  if (OB_SUCC(rc)) {
+    Record record;
+    while ((rc = scanner->next(record)) == RC::SUCCESS) {
+      rc = index->insert_entry(record.data(), &record.rid());
+      if (OB_FAIL(rc)) {
+        break;
+      }
+    }
+    scanner->close_scan();
+    if (rc == RC::RECORD_EOF) {
+      rc = index->sync();
     }
   }
-  if (RC::RECORD_EOF == rc) {
-    rc = RC::SUCCESS;
-  } else {
-    LOG_WARN("failed to insert record into index while creating index. table=%s, index=%s, rc=%s",
-             table_meta_->name(), index_name, strrc(rc));
-    return rc;
+
+  if (OB_SUCC(rc)) {
+    TableMeta changed(*table_meta_);
+    changed.add_index(new_index_meta);
+    rc = persist_metadata(changed);
   }
-  scanner->close_scan();
-  delete scanner;
-  LOG_INFO("inserted all records into new index. table=%s, index=%s", table_meta_->name(), index_name);
-
-  indexes_.push_back(index);
-
-  /// 接下来将这个索引放到表的元数据中
-  TableMeta new_table_meta(*table_meta_);
-  rc = new_table_meta.add_index(new_index_meta);
-  if (rc != RC::SUCCESS) {
-    LOG_ERROR("Failed to add index (%s) on table (%s). error=%d:%s", index_name, table_meta_->name(), rc, strrc(rc));
+  if (OB_FAIL(rc)) {
+    index.reset();
+    unlink(index_file.c_str());
     return rc;
   }
 
-  /// 内存中有一份元数据，磁盘文件也有一份元数据。修改磁盘文件时，先创建一个临时文件，写入完成后再rename为正式文件
-  /// 这样可以防止文件内容不完整
-  // 创建元数据临时文件
-  string  tmp_file = table_meta_file(db_->path().c_str(), table_meta_->name()) + ".tmp";
-  fstream fs;
-  fs.open(tmp_file, ios_base::out | ios_base::binary | ios_base::trunc);
-  if (!fs.is_open()) {
-    LOG_ERROR("Failed to open file for write. file name=%s, errmsg=%s", tmp_file.c_str(), strerror(errno));
-    return RC::IOERR_OPEN;  // 创建索引中途出错，要做还原操作
+  indexes_.push_back(index.release());
+  return RC::SUCCESS;
+}
+
+RC HeapTableEngine::drop_index(const char *name)
+{
+  const auto found = std::find_if(indexes_.begin(), indexes_.end(), [&](Index *index) {
+    return strcmp(index->index_meta().name(), name) == 0;
+  });
+  if (found == indexes_.end()) {
+    return RC::NOTFOUND;
   }
-  if (new_table_meta.serialize(fs) < 0) {
-    LOG_ERROR("Failed to dump new table meta to file: %s. sys err=%d:%s", tmp_file.c_str(), errno, strerror(errno));
+  RC rc = db_->sync();
+  if (OB_FAIL(rc)) {
+    return rc;
+  }
+  const string file = table_index_file(db_->path().c_str(), table_meta_->name(), name);
+  const string detached = file + ".dropping";
+  if (access(detached.c_str(), F_OK) == 0 || rename(file.c_str(), detached.c_str()) != 0) {
     return RC::IOERR_WRITE;
   }
-  fs.close();
+  TableMeta changed(*table_meta_);
+  changed.remove_index(name);
+  rc = persist_metadata(changed);
+  if (OB_FAIL(rc)) {
+    if (rename(detached.c_str(), file.c_str()) != 0) {
+      LOG_ERROR("failed to restore index file %s", file.c_str());
+    }
+    return rc;
+  }
+  delete *found;
+  indexes_.erase(found);
+  if (unlink(detached.c_str()) != 0) {
+    LOG_ERROR("failed to remove detached index file %s", detached.c_str());
+  }
+  return RC::SUCCESS;
+}
 
-  // 覆盖原始元数据文件
-  string meta_file = table_meta_file(db_->path().c_str(), table_meta_->name());
-
-  int ret = rename(tmp_file.c_str(), meta_file.c_str());
-  if (ret != 0) {
-    LOG_ERROR("Failed to rename tmp meta file (%s) to normal meta file (%s) while creating index (%s) on table (%s). "
-              "system error=%d:%s",
-              tmp_file.c_str(), meta_file.c_str(), index_name, table_meta_->name(), errno, strerror(errno));
+RC HeapTableEngine::persist_metadata(TableMeta &metadata)
+{
+  const string path = table_meta_file(db_->path().c_str(), table_meta_->name());
+  const string temporary = path + ".tmp";
+  fstream output(temporary, ios_base::out | ios_base::binary | ios_base::trunc);
+  if (!output.is_open()) {
+    return RC::IOERR_OPEN;
+  }
+  if (metadata.serialize(output) < 0 || !output) {
+    output.close();
+    unlink(temporary.c_str());
     return RC::IOERR_WRITE;
   }
-
-  table_meta_->swap(new_table_meta);
-
-  LOG_INFO("Successfully added a new index (%s) on the table (%s)", index_name, table_meta_->name());
-  return rc;
+  output.close();
+  if (!output || rename(temporary.c_str(), path.c_str()) != 0) {
+    unlink(temporary.c_str());
+    return RC::IOERR_WRITE;
+  }
+  table_meta_->swap(metadata);
+  return RC::SUCCESS;
 }
 
 RC HeapTableEngine::insert_entry_of_indexes(const char *record, const RID &rid)
 {
-  RC rc = RC::SUCCESS;
-  for (Index *index : indexes_) {
-    rc = index->insert_entry(record, &rid);
-    if (rc != RC::SUCCESS) {
-      break;
-    }
-  }
-  return rc;
-}
-
-RC HeapTableEngine::delete_entry_of_indexes(const char *record, const RID &rid, bool error_on_not_exists)
-{
-  RC rc = RC::SUCCESS;
-  for (Index *index : indexes_) {
-    rc = index->delete_entry(record, &rid);
-    if (rc != RC::SUCCESS) {
-      if (rc != RC::RECORD_INVALID_KEY || !error_on_not_exists) {
-        break;
+  for (size_t i = 0; i < indexes_.size(); ++i) {
+    RC rc = indexes_[i]->insert_entry(record, &rid);
+    if (OB_FAIL(rc)) {
+      while (i > 0) {
+        RC undo = indexes_[--i]->delete_entry(record, &rid);
+        if (OB_FAIL(undo)) {
+          LOG_ERROR("failed to reverse index insertion: %s", strrc(undo));
+        }
       }
+      return rc;
     }
   }
-  return rc;
+  return RC::SUCCESS;
 }
 
 RC HeapTableEngine::sync()
@@ -361,8 +376,10 @@ RC HeapTableEngine::init()
 
 RC HeapTableEngine::open()
 {
-  RC rc = RC::SUCCESS;
-  init();
+  RC rc = init();
+  if (OB_FAIL(rc)) {
+    return rc;
+  }
   const int index_num = table_meta_->index_num();
   for (int i = 0; i < index_num; i++) {
     const IndexMeta *index_meta = table_meta_->index(i);
@@ -375,7 +392,7 @@ RC HeapTableEngine::open()
       return RC::INTERNAL;
     }
 
-    BplusTreeIndex *index      = new BplusTreeIndex();
+    Index *index = index_meta->full_text() ? static_cast<Index *>(new FullTextIndex) : new BplusTreeIndex;
     string          index_file = table_index_file(db_->path().c_str(), table_meta_->name(), index_meta->name());
 
     rc = index->open(table_, index_file.c_str(), *index_meta, *field_meta);
@@ -386,6 +403,23 @@ RC HeapTableEngine::open()
       // skip cleanup
       //  do all cleanup action in destructive Table function.
       return rc;
+    }
+    if (index_meta->full_text()) {
+      RecordScanner *raw = nullptr;
+      rc = get_record_scanner(raw, nullptr, ReadWriteMode::READ_ONLY);
+      unique_ptr<RecordScanner> scanner(raw);
+      Record row;
+      while (OB_SUCC(rc) && (rc = scanner->next(row)) == RC::SUCCESS) {
+        rc = index->insert_entry(row.data(), &row.rid());
+      }
+      if (scanner) {
+        scanner->close_scan();
+      }
+      if (rc != RC::RECORD_EOF) {
+        delete index;
+        return rc;
+      }
+      rc = RC::SUCCESS;
     }
     indexes_.push_back(index);
   }

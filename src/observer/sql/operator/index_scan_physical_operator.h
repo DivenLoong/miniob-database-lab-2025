@@ -29,6 +29,7 @@ public:
       bool left_inclusive, const Value *right_value, bool right_inclusive);
 
   virtual ~IndexScanPhysicalOperator() = default;
+  void set_qualifier(const string &qualifier) { tuple_.set_qualifier(qualifier); }
 
   PhysicalOperatorType type() const override { return PhysicalOperatorType::INDEX_SCAN; }
 
