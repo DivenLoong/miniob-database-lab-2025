@@ -791,7 +791,11 @@ expression:
     ;
 
 aggregate_expression:
-    ID LBRACE expression_list RBRACE {
+    ID LBRACE RBRACE {
+      $$ = new ScalarFunctionExpr($1, {});
+      $$->set_name(token_name(sql_string, &@$));
+    }
+    | ID LBRACE expression_list RBRACE {
       if (ScalarFunctionExpr::supports($1)) {
         $$ = new ScalarFunctionExpr($1, std::move(*$3));
         $$->set_name(token_name(sql_string, &@$));
