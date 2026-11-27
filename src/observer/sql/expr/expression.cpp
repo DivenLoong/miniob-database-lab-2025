@@ -146,10 +146,6 @@ RC ComparisonExpr::compare_value(const Value &left, const Value &right, bool &re
     result = (comp_ == IS_NULL) == left.is_null();
     return RC::SUCCESS;
   }
-  if (comp_ == NULL_SAFE_EQUAL) {
-    result = left.compare(right) == 0;
-    return RC::SUCCESS;
-  }
   if (left.is_null() || right.is_null()) {
     result = false;
     return RC::SUCCESS;

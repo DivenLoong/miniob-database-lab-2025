@@ -293,9 +293,9 @@ RC LogicalPlanGenerator::create_plan(InsertStmt *insert_stmt, unique_ptr<Logical
 RC LogicalPlanGenerator::create_plan(UpdateStmt *update, unique_ptr<LogicalOperator> &logical_operator)
 {
   auto update_oper = make_unique<UpdateLogicalOperator>(update->table(), update->values());
-  // Predicate and assignment subqueries can read the same table during the scan.
-  // The transaction checks write conflicts when it replaces each selected record.
-  auto scan = make_unique<TableGetLogicalOperator>(update->table(), ReadWriteMode::READ_ONLY);
+  // Nested reads may scan the same page. The write phase checks their selected rows for conflicts.
+  const auto mode = update->reads_subquery() ? ReadWriteMode::READ_ONLY : ReadWriteMode::READ_WRITE;
+  auto scan = make_unique<TableGetLogicalOperator>(update->table(), mode);
   scan->set_qualifier(update->qualifier());
   unique_ptr<LogicalOperator> predicate;
   RC rc = create_plan(update->filter_stmt(), predicate);

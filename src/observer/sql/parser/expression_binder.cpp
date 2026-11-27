@@ -77,7 +77,8 @@ RC ExpressionBinder::bind_expression(unique_ptr<Expression> &expr, vector<unique
       return bind_field_expression(expr, bound_expressions);
     } break;
 
-    case ExprType::VALUE: {
+    case ExprType::VALUE:
+    case ExprType::ROW_ID: {
       return bind_value_expression(expr, bound_expressions);
     } break;
 

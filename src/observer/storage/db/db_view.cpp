@@ -180,17 +180,10 @@ RC Db::joined_view_write_condition(const ViewDefinition &view, const ViewWriteCo
   if (table == nullptr) {
     return RC::SCHEMA_TABLE_NOT_EXIST;
   }
-  const auto &meta = table->table_meta();
+  // A single joined scan produces the record IDs of the writable relation.
   auto subquery = make_unique<SubqueryExpr>(view.query);
-  auto &identity = subquery->additional_conditions();
-  for (int i = meta.sys_field_num(); i < meta.field_num(); ++i) {
-    const FieldMeta *field = meta.field(i);
-    ConditionSqlNode term{};
-    term.comp = NULL_SAFE_EQUAL;
-    term.left_expression = make_unique<UnboundFieldExpr>(target.qualifier, field->name());
-    term.right_expression = make_unique<UnboundFieldExpr>(outer, field->name());
-    identity.emplace_back(std::move(term));
-  }
+  subquery->project_record_id(target.qualifier);
+  auto &predicates = subquery->additional_conditions();
 
   std::function<RC(unique_ptr<Expression> &)> map_field = [&](unique_ptr<Expression> &expression) {
     if (expression->type() != ExprType::UNBOUND_FIELD) {
@@ -224,11 +217,11 @@ RC Db::joined_view_write_condition(const ViewDefinition &view, const ViewWriteCo
     term.comp = given_term.comp;
     term.left_expression = std::move(left);
     term.right_expression = std::move(right);
-    identity.emplace_back(std::move(term));
+    predicates.emplace_back(std::move(term));
   }
   ConditionSqlNode condition{};
-  condition.comp = EXISTS_SUBQUERY;
-  condition.left_expression = make_unique<ValueExpr>(Value(true));
+  condition.comp = IN_SUBQUERY;
+  condition.left_expression = make_unique<RowIdExpr>(outer);
   condition.right_expression = std::move(subquery);
   combined.emplace_back(std::move(condition));
   return RC::SUCCESS;

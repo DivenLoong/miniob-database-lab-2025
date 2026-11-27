@@ -25,8 +25,10 @@ struct UpdateColumnValue
 class UpdateStmt final : public Stmt
 {
 public:
-  UpdateStmt(Table *table, string qualifier, vector<UpdateColumnValue> values, unique_ptr<FilterStmt> filter)
-      : table_(table), qualifier_(std::move(qualifier)), values_(std::move(values)), filter_(std::move(filter)) {}
+  UpdateStmt(Table *table, string qualifier, vector<UpdateColumnValue> values, unique_ptr<FilterStmt> filter,
+      bool reads_subquery)
+      : table_(table), qualifier_(std::move(qualifier)), values_(std::move(values)), filter_(std::move(filter)),
+        reads_subquery_(reads_subquery) {}
 
   static RC create(Db *db, const UpdateSqlNode &update_sql, Stmt *&stmt);
   StmtType type() const override { return StmtType::UPDATE; }
@@ -35,10 +37,12 @@ public:
   const string &qualifier() const { return qualifier_; }
   const vector<UpdateColumnValue> &values() const { return values_; }
   FilterStmt *filter_stmt() const { return filter_.get(); }
+  bool reads_subquery() const { return reads_subquery_; }
 
 private:
   Table *table_;
   string qualifier_;
   vector<UpdateColumnValue> values_;
   unique_ptr<FilterStmt> filter_;
+  bool reads_subquery_;
 };

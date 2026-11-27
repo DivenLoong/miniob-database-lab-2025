@@ -12,6 +12,7 @@ See the Mulan PSL v2 for more details. */
 
 #include <unordered_set>
 
+#include "sql/expr/expression_iterator.h"
 #include "sql/parser/expression_binder.h"
 #include "storage/db/db.h"
 #include "storage/table/table.h"
@@ -88,6 +89,24 @@ RC UpdateStmt::create(Db *db, const UpdateSqlNode &update, Stmt *&stmt)
   if (OB_FAIL(rc)) {
     return rc;
   }
-  stmt = new UpdateStmt(table, std::move(qualifier), std::move(values), unique_ptr<FilterStmt>(filter));
+  bool reads_subquery = false;
+  function<void(Expression &)> inspect = [&](Expression &expression) {
+    if (expression.type() == ExprType::SUBQUERY) {
+      reads_subquery = true;
+      return;
+    }
+    ExpressionIterator::iterate_child_expr(expression, [&](unique_ptr<Expression> &child) {
+      inspect(*child);
+      return RC::SUCCESS;
+    });
+  };
+  for (const auto &column : values) {
+    inspect(*column.expression);
+  }
+  for (const auto &predicate : filter->predicates()) {
+    inspect(*predicate);
+  }
+  stmt = new UpdateStmt(
+      table, std::move(qualifier), std::move(values), unique_ptr<FilterStmt>(filter), reads_subquery);
   return RC::SUCCESS;
 }

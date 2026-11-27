@@ -46,6 +46,7 @@ unique_ptr<Expression> SubqueryExpr::copy() const
   auto result = make_unique<SubqueryExpr>(sql_);
   result->state_ = state_;
   result->additional_conditions_ = additional_conditions_;
+  result->row_id_qualifier_ = row_id_qualifier_;
   result->result_type_ = result_type_;
   result->set_name(name());
   return result;
@@ -62,6 +63,10 @@ RC SubqueryExpr::bind(const BinderContext &outer)
   auto state = std::make_shared<State>();
   Stmt *statement = nullptr;
   if (node.flag == SCF_SELECT) {
+    if (!row_id_qualifier_.empty()) {
+      node.selection.expressions.clear();
+      node.selection.expressions.emplace_back(make_unique<RowIdExpr>(row_id_qualifier_));
+    }
     if (!additional_conditions_.empty()) {
       for (const auto &condition : node.selection.conditions) {
         if (condition.disjunctive) {
@@ -161,6 +166,17 @@ RC SubqueryExpr::get_value(const Tuple &tuple, Value &value) const
     return RC::INVALID_ARGUMENT;
   }
   return RC::SUCCESS;
+}
+
+RC RowIdExpr::get_value(const Tuple &tuple, Value &value) const
+{
+  RID rid;
+  const RC rc = tuple.find_record_id(qualifier_.c_str(), rid);
+  if (OB_SUCC(rc)) {
+    const string id = rid.to_string();
+    value.set_string(id.c_str(), id.size());
+  }
+  return rc;
 }
 
 unique_ptr<Expression> ValueListExpr::copy() const

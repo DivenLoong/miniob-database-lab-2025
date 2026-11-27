@@ -91,6 +91,7 @@ public:
    * @param[out] cell 返回的cell
    */
   virtual RC find_cell(const TupleCellSpec &spec, Value &cell) const = 0;
+  virtual RC find_record_id(const char *, RID &) const { return RC::NOTFOUND; }
 
   virtual string to_string() const
   {
@@ -203,6 +204,15 @@ public:
   {
     const Field &field = speces_[index]->field();
     spec = TupleCellSpec(qualifier_.empty() ? table_->name() : qualifier_.c_str(), field.field_name());
+    return RC::SUCCESS;
+  }
+
+  RC find_record_id(const char *qualifier, RID &rid) const override
+  {
+    if (strcasecmp(qualifier, qualifier_.empty() ? table_->name() : qualifier_.c_str()) != 0) {
+      return RC::NOTFOUND;
+    }
+    rid = record_->rid();
     return RC::SUCCESS;
   }
 
@@ -438,6 +448,12 @@ public:
     }
 
     return right_->find_cell(spec, value);
+  }
+
+  RC find_record_id(const char *qualifier, RID &rid) const override
+  {
+    const RC rc = left_->find_record_id(qualifier, rid);
+    return rc == RC::NOTFOUND ? right_->find_record_id(qualifier, rid) : rc;
   }
 
 private:

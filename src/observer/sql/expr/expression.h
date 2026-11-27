@@ -48,6 +48,7 @@ enum class ExprType
   SCALAR_FUNCTION,
   SUBQUERY,
   VALUE_LIST,
+  ROW_ID,
   OUTER_FIELD,
   ARITHMETIC,   ///< 算术运算
   AGGREGATION,  ///< 聚合运算

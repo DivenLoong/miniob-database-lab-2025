@@ -25,14 +25,29 @@ public:
   RC get_value(const Tuple &tuple, Value &value) const override;
   RC bind(const BinderContext &outer);
   vector<ConditionSqlNode> &additional_conditions() { return additional_conditions_; }
+  void project_record_id(const string &qualifier) { row_id_qualifier_ = qualifier; }
   RC evaluate(const Tuple &outer, size_t max_rows, bool check_column, vector<Value> &rows) const;
 
 private:
   struct State;
   string sql_;
   vector<ConditionSqlNode> additional_conditions_;
+  string row_id_qualifier_;
   AttrType result_type_ = AttrType::UNDEFINED;
   shared_ptr<State> state_;
+};
+
+class RowIdExpr final : public Expression
+{
+public:
+  explicit RowIdExpr(string qualifier) : qualifier_(std::move(qualifier)) { set_name("row_id"); }
+  ExprType type() const override { return ExprType::ROW_ID; }
+  AttrType value_type() const override { return AttrType::CHARS; }
+  RC get_value(const Tuple &tuple, Value &value) const override;
+  unique_ptr<Expression> copy() const override { return make_unique<RowIdExpr>(qualifier_); }
+
+private:
+  string qualifier_;
 };
 
 class ValueListExpr final : public Expression
