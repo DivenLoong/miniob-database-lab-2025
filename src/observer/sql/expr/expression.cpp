@@ -151,7 +151,9 @@ RC ComparisonExpr::compare_value(const Value &left, const Value &right, bool &re
     return RC::SUCCESS;
   }
   RC  rc         = RC::SUCCESS;
-  int cmp_result = left.compare(right);
+  const bool text_number = (left.attr_type() == AttrType::CHARS && is_numerical_type(right.attr_type())) ||
+      (right.attr_type() == AttrType::CHARS && is_numerical_type(left.attr_type()));
+  int cmp_result = text_number ? Value(left.get_float()).compare(Value(right.get_float())) : left.compare(right);
   result         = false;
   switch (comp_) {
     case EQUAL_TO: {
@@ -206,11 +208,22 @@ RC ComparisonExpr::get_value(const Tuple &tuple, Value &value) const
 {
   if (comp_ >= IN_SUBQUERY && comp_ <= NOT_EXISTS_SUBQUERY) {
     const bool exists = comp_ == EXISTS_SUBQUERY || comp_ == NOT_EXISTS_SUBQUERY;
-    const auto &query = static_cast<const SubqueryExpr &>(*right_);
     vector<Value> rows;
-    RC rc = query.evaluate(tuple, exists ? 1 : 0, !exists, rows);
-    if (OB_FAIL(rc)) {
-      return rc;
+    RC rc = RC::SUCCESS;
+    if (right_->type() == ExprType::VALUE_LIST) {
+      for (const auto &item : static_cast<const ValueListExpr &>(*right_).values()) {
+        Value selected;
+        rc = item->get_value(tuple, selected);
+        if (OB_FAIL(rc)) {
+          return rc;
+        }
+        rows.emplace_back(std::move(selected));
+      }
+    } else {
+      rc = static_cast<const SubqueryExpr &>(*right_).evaluate(tuple, exists ? 1 : 0, !exists, rows);
+      if (OB_FAIL(rc)) {
+        return rc;
+      }
     }
     if (exists) {
       value.set_boolean((comp_ == EXISTS_SUBQUERY) == !rows.empty());

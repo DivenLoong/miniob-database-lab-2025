@@ -32,6 +32,21 @@ private:
   shared_ptr<State> state_;
 };
 
+class ValueListExpr final : public Expression
+{
+public:
+  explicit ValueListExpr(vector<unique_ptr<Expression>> values) : values_(std::move(values)) {}
+  ExprType type() const override { return ExprType::VALUE_LIST; }
+  AttrType value_type() const override { return AttrType::UNDEFINED; }
+  RC get_value(const Tuple &, Value &) const override { return RC::INVALID_ARGUMENT; }
+  unique_ptr<Expression> copy() const override;
+  vector<unique_ptr<Expression>> &values() { return values_; }
+  const vector<unique_ptr<Expression>> &values() const { return values_; }
+
+private:
+  vector<unique_ptr<Expression>> values_;
+};
+
 class OuterFieldExpr final : public FieldExpr
 {
 public:

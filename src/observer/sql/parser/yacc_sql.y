@@ -629,15 +629,13 @@ update_stmt:
     }
     ;
 assignments:
-    ID EQ signed_value {
+    ID EQ expression {
       $$ = new vector<UpdateAssignmentSqlNode>;
-      $$->push_back({$1, std::move(*$3)});
-      delete $3;
+      $$->push_back({$1, unique_ptr<Expression>($3)});
     }
-    | assignments COMMA ID EQ signed_value {
+    | assignments COMMA ID EQ expression {
       $$ = $1;
-      $$->push_back({$3, std::move(*$5)});
-      delete $5;
+      $$->push_back({$3, unique_ptr<Expression>($5)});
     }
     ;
 
@@ -800,9 +798,8 @@ aggregate_expression:
       } else if ($3->size() == 1) {
         $$ = create_aggregate_expression($1, $3->front().release(), sql_string, &@$);
       } else {
-        delete $3;
-        yyerror(&@$, sql_string, sql_result, scanner, "invalid function arguments");
-        YYERROR;
+        $$ = new ScalarFunctionExpr($1, std::move(*$3));
+        $$->set_name(token_name(sql_string, &@$));
       }
       delete $3;
     }
@@ -911,6 +908,20 @@ condition:
       $$->left_expression.reset($1);
       $$->right_expression.reset($4);
       $$->comp = NOT_IN_SUBQUERY;
+    }
+    | expression IN LBRACE expression_list RBRACE {
+      $$ = new ConditionSqlNode{};
+      $$->left_expression.reset($1);
+      $$->right_expression.reset(new ValueListExpr(std::move(*$4)));
+      $$->comp = IN_SUBQUERY;
+      delete $4;
+    }
+    | expression NOT IN LBRACE expression_list RBRACE {
+      $$ = new ConditionSqlNode{};
+      $$->left_expression.reset($1);
+      $$->right_expression.reset(new ValueListExpr(std::move(*$5)));
+      $$->comp = NOT_IN_SUBQUERY;
+      delete $5;
     }
     | EXISTS subquery {
       $$ = new ConditionSqlNode{};

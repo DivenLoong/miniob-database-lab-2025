@@ -180,7 +180,7 @@ RC PlainCommunicator::write_result_internal(SessionEvent *event, bool &need_disc
   for (int i = 0; i < cell_num; i++) {
     const TupleCellSpec &spec  = schema.cell_at(i);
     const char          *alias = spec.alias();
-    if (nullptr != alias || alias[0] != 0) {
+    if (alias != nullptr && alias[0] != 0) {
       if (0 != i) {
         const char *delim = " | ";
 
@@ -222,7 +222,13 @@ RC PlainCommunicator::write_result_internal(SessionEvent *event, bool &need_disc
   }
 
   if (OB_FAIL(rc)) {
-    return rc;
+    sql_result->close();
+    if (rc == RC::IOERR_WRITE || rc == RC::IOERR_CLOSE) {
+      return rc;
+    }
+    writer_->discard_pending();
+    sql_result->set_return_code(rc);
+    return write_state(event, need_disconnect);
   }
 
   if (cell_num == 0) {
@@ -262,7 +268,6 @@ RC PlainCommunicator::write_tuple_result(SqlResult *sql_result)
         rc = writer_->writen(delim, strlen(delim));
         if (OB_FAIL(rc)) {
           LOG_WARN("failed to send data to client. err=%s", strerror(errno));
-          sql_result->close();
           return rc;
         }
       }
@@ -271,7 +276,6 @@ RC PlainCommunicator::write_tuple_result(SqlResult *sql_result)
       rc = tuple->cell_at(i, value);
       if (rc != RC::SUCCESS) {
         LOG_WARN("failed to get tuple cell value. rc=%s", strrc(rc));
-        sql_result->close();
         return rc;
       }
 
@@ -280,7 +284,6 @@ RC PlainCommunicator::write_tuple_result(SqlResult *sql_result)
       rc = writer_->writen(cell_str.data(), cell_str.size());
       if (OB_FAIL(rc)) {
         LOG_WARN("failed to send data to client. err=%s", strerror(errno));
-        sql_result->close();
         return rc;
       }
     }
@@ -315,8 +318,7 @@ RC PlainCommunicator::write_chunk_result(SqlResult *sql_result)
           rc = writer_->writen(delim, strlen(delim));
           if (OB_FAIL(rc)) {
             LOG_WARN("failed to send data to client. err=%s", strerror(errno));
-            sql_result->close();
-            return rc;
+              return rc;
           }
         }
 
@@ -327,7 +329,6 @@ RC PlainCommunicator::write_chunk_result(SqlResult *sql_result)
         rc = writer_->writen(cell_str.data(), cell_str.size());
         if (OB_FAIL(rc)) {
           LOG_WARN("failed to send data to client. err=%s", strerror(errno));
-          sql_result->close();
           return rc;
         }
       }
@@ -336,7 +337,6 @@ RC PlainCommunicator::write_chunk_result(SqlResult *sql_result)
       rc = writer_->writen(&newline, 1);
       if (OB_FAIL(rc)) {
         LOG_WARN("failed to send data to client. err=%s", strerror(errno));
-        sql_result->close();
         return rc;
       }
     }

@@ -194,7 +194,26 @@ RC BplusTreeIndex::insert_entry(const char *record, const RID *rid)
       return rc;
     }
     if (!existing.empty()) {
-      return RC::RECORD_DUPLICATE_KEY;
+      const auto &metadata = table_->table_meta();
+      if (metadata.sys_field_num() < 2) {
+        return RC::RECORD_DUPLICATE_KEY;
+      }
+      int32_t inserting_begin;
+      memcpy(&inserting_begin, record + metadata.field(0)->offset(), sizeof(inserting_begin));
+      for (const RID &existing_rid : existing) {
+        Record version;
+        rc = table_->get_record(existing_rid, version);
+        if (OB_FAIL(rc)) {
+          return rc;
+        }
+        int32_t existing_end;
+        memcpy(&existing_end, version.data() + metadata.field(1)->offset(), sizeof(existing_end));
+        const bool ended = existing_end > 0 && existing_end != numeric_limits<int32_t>::max();
+        const bool replaced_by_same_trx = inserting_begin < 0 && inserting_begin == existing_end;
+        if (!ended && !replaced_by_same_trx) {
+          return RC::RECORD_DUPLICATE_KEY;
+        }
+      }
     }
   }
   return index_handler_.insert_entry(data, rid);

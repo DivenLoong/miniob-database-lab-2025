@@ -19,7 +19,7 @@ class FieldMeta;
 struct UpdateColumnValue
 {
   const FieldMeta *field;
-  Value value;
+  shared_ptr<Expression> expression;
 };
 
 class UpdateStmt final : public Stmt

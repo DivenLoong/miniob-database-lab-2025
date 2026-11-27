@@ -19,6 +19,7 @@ public:
       : function_(std::move(function)), arguments_(std::move(arguments)) {}
 
   static bool supports(const char *name);
+  const char *function_name() const { return function_.c_str(); }
   ExprType type() const override { return ExprType::SCALAR_FUNCTION; }
   AttrType value_type() const override;
   RC get_value(const Tuple &tuple, Value &value) const override;

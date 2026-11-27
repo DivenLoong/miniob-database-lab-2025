@@ -34,7 +34,7 @@ bool is_vector_distance(const char *name)
 bool ScalarFunctionExpr::supports(const char *name)
 {
   return strcasecmp(name, "length") == 0 || strcasecmp(name, "round") == 0 || strcasecmp(name, "date_format") == 0 || strcasecmp(name, "tokenize") == 0 ||
-      is_vector_parse(name) || is_vector_format(name) || is_vector_distance(name);
+      strcasecmp(name, "match") == 0 || is_vector_parse(name) || is_vector_format(name) || is_vector_distance(name);
 }
 
 AttrType ScalarFunctionExpr::value_type() const

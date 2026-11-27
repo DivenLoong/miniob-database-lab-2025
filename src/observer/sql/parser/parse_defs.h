@@ -162,7 +162,7 @@ struct DeleteSqlNode
 struct UpdateAssignmentSqlNode
 {
   string name;
-  Value value;
+  unique_ptr<Expression> expression;
 };
 
 struct UpdateSqlNode

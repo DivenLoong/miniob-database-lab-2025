@@ -12,6 +12,7 @@ See the Mulan PSL v2 for more details. */
 
 #include <unordered_set>
 
+#include "sql/parser/expression_binder.h"
 #include "storage/db/db.h"
 #include "storage/table/table.h"
 
@@ -37,6 +38,9 @@ RC UpdateStmt::create(Db *db, const UpdateSqlNode &update, Stmt *&stmt)
     return RC::SCHEMA_TABLE_NOT_EXIST;
   }
 
+  BinderContext context(db);
+  context.add_table(table);
+  ExpressionBinder binder(context);
   vector<UpdateColumnValue> values;
   std::unordered_set<int> selected;
   for (const auto &assignment : update.assignments) {
@@ -45,18 +49,19 @@ RC UpdateStmt::create(Db *db, const UpdateSqlNode &update, Stmt *&stmt)
     if (field == nullptr || !field->visible() || !selected.insert(field->field_id()).second) {
       return RC::SCHEMA_FIELD_NOT_EXIST;
     }
-    Value value = assignment.value;
-    if (value.is_null() && !field->nullable()) {
+    auto expression = assignment.expression->copy();
+    vector<unique_ptr<Expression>> bound;
+    RC rc = binder.bind_expression(expression, bound);
+    if (OB_FAIL(rc)) {
+      return rc;
+    }
+    if (bound.size() != 1 || bound.front()->type() == ExprType::AGGREGATION) {
+      return RC::INVALID_ARGUMENT;
+    }
+    if (!field->nullable() && bound.front()->value_type() == AttrType::NULLS) {
       return RC::SCHEMA_FIELD_TYPE_MISMATCH;
     }
-    if (!value.is_null() && value.attr_type() != field->type() &&
-        !(field->type() == AttrType::TEXTS && value.attr_type() == AttrType::CHARS)) {
-      RC rc = Value::cast_to(assignment.value, field->type(), value);
-      if (OB_FAIL(rc)) {
-        return rc;
-      }
-    }
-    values.push_back({field, std::move(value)});
+    values.push_back({field, std::move(bound.front())});
   }
 
   unordered_map<string, Table *> tables{{table->name(), table}};

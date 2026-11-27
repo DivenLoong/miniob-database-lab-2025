@@ -153,6 +153,15 @@ RC SubqueryExpr::get_value(const Tuple &tuple, Value &value) const
   return RC::SUCCESS;
 }
 
+unique_ptr<Expression> ValueListExpr::copy() const
+{
+  vector<unique_ptr<Expression>> copied;
+  for (const auto &item : values_) {
+    copied.emplace_back(item->copy());
+  }
+  return make_unique<ValueListExpr>(std::move(copied));
+}
+
 unique_ptr<Expression> OuterFieldExpr::copy() const
 {
   auto result = make_unique<OuterFieldExpr>(field().table(), field().meta(), depth_);

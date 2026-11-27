@@ -22,16 +22,41 @@ RC UpdatePhysicalOperator::open(Trx *trx)
   }
 
   // Finish scanning before modifying index keys and release any held page latches.
-  vector<Record> originals;
+  vector<std::pair<Record, Record>> changes;
   while ((rc = scan.next()) == RC::SUCCESS) {
-    const Record &row = static_cast<RowTuple *>(scan.current_tuple())->record();
+    const auto &tuple = *static_cast<RowTuple *>(scan.current_tuple());
+    const Record &row = tuple.record();
     Record snapshot;
     rc = snapshot.copy_data(row.data(), row.len());
     if (OB_FAIL(rc)) {
       break;
     }
     snapshot.set_rid(row.rid());
-    originals.emplace_back(std::move(snapshot));
+    Record changed(snapshot);
+    for (const auto &column : values_) {
+      Value value;
+      rc = column.expression->get_value(tuple, value);
+      if (OB_FAIL(rc)) {
+        break;
+      }
+      if (!value.is_null() && value.attr_type() != column.field->type() &&
+          !(column.field->type() == AttrType::TEXTS && value.attr_type() == AttrType::CHARS)) {
+        Value converted;
+        rc = Value::cast_to(value, column.field->type(), converted);
+        if (OB_FAIL(rc)) {
+          break;
+        }
+        value = std::move(converted);
+      }
+      rc = table_->set_value_to_record(changed.data(), value, column.field);
+      if (OB_FAIL(rc)) {
+        break;
+      }
+    }
+    if (OB_FAIL(rc)) {
+      break;
+    }
+    changes.emplace_back(std::move(snapshot), std::move(changed));
   }
   const RC close_rc = scan.close();
   if (rc != RC::RECORD_EOF) {
@@ -41,14 +66,7 @@ RC UpdatePhysicalOperator::open(Trx *trx)
     return close_rc;
   }
 
-  for (Record &original : originals) {
-    Record changed(original);
-    for (const auto &column : values_) {
-      rc = table_->set_value_to_record(changed.data(), column.value, column.field);
-      if (OB_FAIL(rc)) {
-        return rc;
-      }
-    }
+  for (auto &[original, changed] : changes) {
     rc = trx->update_record(table_, original, changed);
     if (OB_FAIL(rc)) {
       return rc;

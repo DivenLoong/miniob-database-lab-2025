@@ -105,9 +105,28 @@ RC ExpressionBinder::bind_expression(unique_ptr<Expression> &expr, vector<unique
       }
       return rc;
     }
+    case ExprType::VALUE_LIST: {
+      auto &list = static_cast<ValueListExpr &>(*expr);
+      for (auto &item : list.values()) {
+        vector<unique_ptr<Expression>> bound;
+        RC rc = bind_expression(item, bound);
+        if (OB_FAIL(rc)) {
+          return rc;
+        }
+        if (bound.size() != 1) {
+          return RC::INVALID_ARGUMENT;
+        }
+        item = std::move(bound.front());
+      }
+      bound_expressions.emplace_back(std::move(expr));
+      return RC::SUCCESS;
+    }
     case ExprType::SCALAR_FUNCTION: {
       auto &function = static_cast<ScalarFunctionExpr &>(*expr);
       RC rc = RC::SUCCESS;
+      if (!ScalarFunctionExpr::supports(function.function_name())) {
+        return RC::INVALID_ARGUMENT;
+      }
       for (auto &argument : function.arguments()) {
         vector<unique_ptr<Expression>> bound;
         rc = bind_expression(argument, bound);
@@ -145,6 +164,9 @@ RC ExpressionBinder::bind_star_expression(
   }
 
   auto star_expr = static_cast<StarExpr *>(expr.get());
+  if (*star_expr->alias() != '\0') {
+    return RC::INVALID_ARGUMENT;
+  }
 
   const char *table_name = star_expr->table_name();
   if (!is_blank(table_name) && 0 != strcmp(table_name, "*")) {

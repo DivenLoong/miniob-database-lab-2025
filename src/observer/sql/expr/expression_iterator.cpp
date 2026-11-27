@@ -15,6 +15,7 @@ See the Mulan PSL v2 for more details. */
 #include "sql/expr/expression_iterator.h"
 #include "sql/expr/expression.h"
 #include "sql/expr/scalar_function_expr.h"
+#include "sql/expr/subquery_expr.h"
 #include "common/log/log.h"
 
 using namespace std;
@@ -44,6 +45,15 @@ RC ExpressionIterator::iterate_child_expr(Expression &expr, function<RC(unique_p
       auto &conjunction_expr = static_cast<ConjunctionExpr &>(expr);
       for (auto &child : conjunction_expr.children()) {
         rc = callback(child);
+        if (OB_FAIL(rc)) {
+          break;
+        }
+      }
+    } break;
+
+    case ExprType::VALUE_LIST: {
+      for (auto &item : static_cast<ValueListExpr &>(expr).values()) {
+        rc = callback(item);
         if (OB_FAIL(rc)) {
           break;
         }

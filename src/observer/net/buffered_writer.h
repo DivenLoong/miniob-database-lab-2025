@@ -57,6 +57,8 @@ public:
    */
   RC flush();
 
+  void discard_pending() { buffer_.forward(buffer_.size()); }
+
 private:
   /**
    * @brief 刷新缓存
