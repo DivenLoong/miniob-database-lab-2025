@@ -168,7 +168,8 @@ RC ScalarFunctionExpr::evaluate(const vector<Value> &args, Value &result) const
     float score = 0;
     RC rc = index->score(args[0].get_string(), args[1].get_string(), score);
     if (OB_SUCC(rc)) {
-      result.set_float(score);
+      // Relevance scores retain one decimal digit when the rounded value is integral.
+      result.set_float(score, true);
     }
     return rc;
   }

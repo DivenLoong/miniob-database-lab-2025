@@ -36,6 +36,7 @@ Value::Value(const Value &other)
   this->attr_type_ = other.attr_type_;
   this->length_    = other.length_;
   this->own_data_  = other.own_data_;
+  retain_decimal_ = other.retain_decimal_;
   switch (this->attr_type_) {
     case AttrType::CHARS:
     case AttrType::VECTORS: {
@@ -53,6 +54,7 @@ Value::Value(Value &&other)
   this->attr_type_ = other.attr_type_;
   this->length_    = other.length_;
   this->own_data_  = other.own_data_;
+  retain_decimal_ = other.retain_decimal_;
   this->value_     = other.value_;
   other.own_data_  = false;
   other.length_    = 0;
@@ -67,6 +69,7 @@ Value &Value::operator=(const Value &other)
   this->attr_type_ = other.attr_type_;
   this->length_    = other.length_;
   this->own_data_  = other.own_data_;
+  retain_decimal_ = other.retain_decimal_;
   switch (this->attr_type_) {
     case AttrType::CHARS:
     case AttrType::VECTORS: {
@@ -89,6 +92,7 @@ Value &Value::operator=(Value &&other)
   this->attr_type_ = other.attr_type_;
   this->length_    = other.length_;
   this->own_data_  = other.own_data_;
+  retain_decimal_ = other.retain_decimal_;
   this->value_     = other.value_;
   other.own_data_  = false;
   other.length_    = 0;
@@ -111,6 +115,7 @@ void Value::reset()
   attr_type_ = AttrType::UNDEFINED;
   length_    = 0;
   own_data_  = false;
+  retain_decimal_ = false;
 }
 
 void Value::set_data(char *data, int length)
@@ -169,9 +174,10 @@ void Value::set_int(int val)
   length_           = sizeof(val);
 }
 
-void Value::set_float(float val)
+void Value::set_float(float val, bool retain_decimal)
 {
   reset();
+  retain_decimal_     = retain_decimal;
   attr_type_          = AttrType::FLOATS;
   value_.float_value_ = val;
   length_             = sizeof(val);

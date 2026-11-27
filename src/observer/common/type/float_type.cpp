@@ -87,8 +87,9 @@ RC FloatType::set_value_from_str(Value &val, const string &data) const
 
 RC FloatType::to_string(const Value &val, string &result) const
 {
-  stringstream ss;
-  ss << common::double_to_str(val.value_.float_value_);
-  result = ss.str();
+  result = common::double_to_str(val.value_.float_value_);
+  if (val.retain_decimal_ && result.find('.') == string::npos) {
+    result += ".0";
+  }
   return RC::SUCCESS;
 }

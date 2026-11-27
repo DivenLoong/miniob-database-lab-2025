@@ -118,7 +118,7 @@ public:
 
 public:
   void set_int(int val);
-  void set_float(float val);
+  void set_float(float val, bool retain_decimal = false);
   void set_vector(span<const float> values);
   span<const float> get_vector() const;
   void set_string(const char *s, int len = 0);
@@ -139,4 +139,5 @@ private:
 
   /// 是否申请并占有内存, 目前对于 CHARS 类型 own_data_ 为true, 其余类型 own_data_ 为false
   bool own_data_ = false;
+  bool retain_decimal_ = false;
 };
