@@ -1,0 +1,77 @@
+/* Copyright (c) 2021 OceanBase and/or its affiliates. All rights reserved.
+miniob is licensed under Mulan PSL v2.
+You can use this software according to the terms and conditions of the Mulan PSL v2.
+You may obtain a copy of Mulan PSL v2 at:
+         http://license.coscl.org.cn/MulanPSL2
+THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
+EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
+MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
+See the Mulan PSL v2 for more details. */
+
+//
+// Created by Meiyi & Wangyunlai on 2021/5/12.
+//
+
+#pragma once
+
+#include "common/sys/rc.h"
+#include "common/lang/string.h"
+#include "sql/parser/parse_defs.h"
+
+namespace Json {
+class Value;
+}  // namespace Json
+
+/**
+ * @brief 字段元数据
+ *
+ */
+class FieldMeta
+{
+public:
+  FieldMeta();
+  FieldMeta(const char *name, AttrType attr_type, int attr_offset, int attr_len, bool visible, int field_id);
+  ~FieldMeta() = default;
+
+  RC init(const char *name, AttrType attr_type, int attr_offset, int attr_len, bool visible, int field_id);
+
+public:
+  const char *name() const;
+  AttrType    type() const;
+  int         offset() const;
+  int         len() const;
+  bool        visible() const;
+  int         field_id() const;
+  bool nullable() const { return nullable_; }
+  void set_nullable(bool nullable) { nullable_ = nullable; }
+  void set_null_position(int byte, unsigned char mask) { null_byte_ = byte; null_mask_ = mask; }
+  bool is_null(const char *record) const { return nullable_ && (record[null_byte_] & null_mask_) != 0; }
+  void write_null(char *record, bool is_null) const
+  {
+    if (nullable_) {
+      if (is_null) {
+        record[null_byte_] |= null_mask_;
+      } else {
+        record[null_byte_] &= ~null_mask_;
+      }
+    }
+  }
+
+public:
+  void desc(ostream &os) const;
+
+public:
+  void      to_json(Json::Value &json_value) const;
+  static RC from_json(const Json::Value &json_value, FieldMeta &field);
+
+protected:
+  string   name_;
+  AttrType attr_type_;
+  int      attr_offset_;
+  int      attr_len_;
+  bool     visible_;
+  int      field_id_;
+  bool nullable_ = false;
+  int null_byte_ = 0;
+  unsigned char null_mask_ = 0;
+};
