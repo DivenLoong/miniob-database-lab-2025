@@ -25,12 +25,31 @@ RC UpdateStmt::create(Db *db, const UpdateSqlNode &update, Stmt *&stmt)
   Table *table = db->find_table(update.relation_name.c_str());
   const ViewDefinition *view = db->find_view(update.relation_name);
   vector<ConditionSqlNode> conditions;
+  string qualifier;
   if (view != nullptr) {
-    RC rc = db->view_write_conditions(*view, update.conditions, conditions);
+    const ViewWriteColumn *target = nullptr;
+    for (const auto &assignment : update.assignments) {
+      const auto *source = db->view_write_source(*view, assignment.name);
+      if (source == nullptr || (target != nullptr &&
+          (source->table != target->table || source->qualifier != target->qualifier))) {
+        return RC::UNSUPPORTED;
+      }
+      target = source;
+    }
+    if (target == nullptr) {
+      return RC::INVALID_ARGUMENT;
+    }
+    table = db->find_table(target->table.c_str());
+    RC rc;
+    if (view->write_table.empty()) {
+      qualifier = "__miniob_write_target";
+      rc = db->joined_view_write_condition(*view, *target, qualifier, update.conditions, conditions);
+    } else {
+      rc = db->view_write_conditions(*view, update.conditions, conditions);
+    }
     if (OB_FAIL(rc)) {
       return rc;
     }
-    table = db->find_table(view->write_table.c_str());
   } else {
     conditions = update.conditions;
   }
@@ -39,7 +58,7 @@ RC UpdateStmt::create(Db *db, const UpdateSqlNode &update, Stmt *&stmt)
   }
 
   BinderContext context(db);
-  context.add_table(table);
+  context.add_table(table, qualifier);
   ExpressionBinder binder(context);
   vector<UpdateColumnValue> values;
   std::unordered_set<int> selected;
@@ -64,12 +83,11 @@ RC UpdateStmt::create(Db *db, const UpdateSqlNode &update, Stmt *&stmt)
     values.push_back({field, std::move(bound.front())});
   }
 
-  unordered_map<string, Table *> tables{{table->name(), table}};
   FilterStmt *filter = nullptr;
-  RC rc = FilterStmt::create(db, table, &tables, conditions.data(), conditions.size(), filter);
+  RC rc = FilterStmt::create(db, table, nullptr, conditions.data(), conditions.size(), filter, false, &context);
   if (OB_FAIL(rc)) {
     return rc;
   }
-  stmt = new UpdateStmt(table, std::move(values), unique_ptr<FilterStmt>(filter));
+  stmt = new UpdateStmt(table, std::move(qualifier), std::move(values), unique_ptr<FilterStmt>(filter));
   return RC::SUCCESS;
 }

@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 
 #include "sql/expr/expression.h"
+#include "sql/parser/parse_defs.h"
 
 class BinderContext;
 
@@ -23,11 +24,13 @@ public:
   unique_ptr<Expression> copy() const override;
   RC get_value(const Tuple &tuple, Value &value) const override;
   RC bind(const BinderContext &outer);
+  vector<ConditionSqlNode> &additional_conditions() { return additional_conditions_; }
   RC evaluate(const Tuple &outer, size_t max_rows, bool check_column, vector<Value> &rows) const;
 
 private:
   struct State;
   string sql_;
+  vector<ConditionSqlNode> additional_conditions_;
   AttrType result_type_ = AttrType::UNDEFINED;
   shared_ptr<State> state_;
 };

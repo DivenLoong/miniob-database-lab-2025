@@ -45,6 +45,7 @@ unique_ptr<Expression> SubqueryExpr::copy() const
 {
   auto result = make_unique<SubqueryExpr>(sql_);
   result->state_ = state_;
+  result->additional_conditions_ = additional_conditions_;
   result->result_type_ = result_type_;
   result->set_name(name());
   return result;
@@ -61,6 +62,15 @@ RC SubqueryExpr::bind(const BinderContext &outer)
   auto state = std::make_shared<State>();
   Stmt *statement = nullptr;
   if (node.flag == SCF_SELECT) {
+    if (!additional_conditions_.empty()) {
+      for (const auto &condition : node.selection.conditions) {
+        if (condition.disjunctive) {
+          return RC::UNSUPPORTED;
+        }
+      }
+      node.selection.conditions.insert(
+          node.selection.conditions.end(), additional_conditions_.begin(), additional_conditions_.end());
+    }
     rc = SelectStmt::create(outer.db(), node.selection, statement, &outer, &state->correlated);
   } else if (node.flag == SCF_CALC) {
     rc = CalcStmt::create(node.calc, statement);

@@ -29,12 +29,19 @@ See the Mulan PSL v2 for more details. */
 class Table;
 class Stmt;
 
+struct ViewWriteColumn
+{
+  string name;
+  string table;
+  string qualifier;
+};
+
 struct ViewDefinition
 {
   Table *schema = nullptr;
   string query;
   string write_table;
-  vector<string> write_columns;
+  vector<ViewWriteColumn> write_columns;
 };
 class LogHandler;
 class BufferPoolManager;
@@ -89,7 +96,10 @@ public:
   RC drop_view(const string &name);
   const ViewDefinition *find_view(const string &name) const;
   RC prepare_view_query(const string &query, unique_ptr<Stmt> &statement);
+  const ViewWriteColumn *view_write_source(const ViewDefinition &view, const string &exposed) const;
   string view_write_column(const ViewDefinition &view, const string &exposed) const;
+  RC joined_view_write_condition(const ViewDefinition &view, const ViewWriteColumn &target, const string &outer,
+      const vector<ConditionSqlNode> &given, vector<ConditionSqlNode> &combined);
   RC view_write_conditions(const ViewDefinition &view, const vector<ConditionSqlNode> &given,
       vector<ConditionSqlNode> &combined);
 

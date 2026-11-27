@@ -293,7 +293,10 @@ RC LogicalPlanGenerator::create_plan(InsertStmt *insert_stmt, unique_ptr<Logical
 RC LogicalPlanGenerator::create_plan(UpdateStmt *update, unique_ptr<LogicalOperator> &logical_operator)
 {
   auto update_oper = make_unique<UpdateLogicalOperator>(update->table(), update->values());
-  auto scan = make_unique<TableGetLogicalOperator>(update->table(), ReadWriteMode::READ_WRITE);
+  // Predicate and assignment subqueries can read the same table during the scan.
+  // The transaction checks write conflicts when it replaces each selected record.
+  auto scan = make_unique<TableGetLogicalOperator>(update->table(), ReadWriteMode::READ_ONLY);
+  scan->set_qualifier(update->qualifier());
   unique_ptr<LogicalOperator> predicate;
   RC rc = create_plan(update->filter_stmt(), predicate);
   if (OB_FAIL(rc)) {

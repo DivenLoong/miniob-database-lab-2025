@@ -25,18 +25,20 @@ struct UpdateColumnValue
 class UpdateStmt final : public Stmt
 {
 public:
-  UpdateStmt(Table *table, vector<UpdateColumnValue> values, unique_ptr<FilterStmt> filter)
-      : table_(table), values_(std::move(values)), filter_(std::move(filter)) {}
+  UpdateStmt(Table *table, string qualifier, vector<UpdateColumnValue> values, unique_ptr<FilterStmt> filter)
+      : table_(table), qualifier_(std::move(qualifier)), values_(std::move(values)), filter_(std::move(filter)) {}
 
   static RC create(Db *db, const UpdateSqlNode &update_sql, Stmt *&stmt);
   StmtType type() const override { return StmtType::UPDATE; }
 
   Table *table() const { return table_; }
+  const string &qualifier() const { return qualifier_; }
   const vector<UpdateColumnValue> &values() const { return values_; }
   FilterStmt *filter_stmt() const { return filter_.get(); }
 
 private:
   Table *table_;
+  string qualifier_;
   vector<UpdateColumnValue> values_;
   unique_ptr<FilterStmt> filter_;
 };

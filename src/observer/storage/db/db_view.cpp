@@ -16,6 +16,7 @@ See the Mulan PSL v2 for more details. */
 #include "json/json.h"
 #include "sql/parser/parse.h"
 #include "sql/expr/expression_iterator.h"
+#include "sql/expr/subquery_expr.h"
 #include "sql/stmt/calc_stmt.h"
 #include "sql/stmt/select_stmt.h"
 #include "storage/table/table.h"
@@ -77,11 +78,8 @@ RC Db::create_view(const CreateViewSqlNode &request)
     return RC::SCHEMA_FIELD_MISSING;
   }
 
-  bool updatable = select && select->tables().size() == 1 && select->group_by().empty() &&
+  bool updatable = select && !select->tables().empty() && select->group_by().empty() &&
       select->order_by().empty() && select->limit() < 0;
-  if (updatable && !find_table(select->tables()[0]->name())) {
-    updatable = false;
-  }
   ViewDefinition view;
   view.query = request.query;
   vector<AttrInfoSqlNode> columns;
@@ -96,7 +94,11 @@ RC Db::create_view(const CreateViewSqlNode &request)
       return RC::INVALID_ARGUMENT;
     }
     updatable = updatable && field != nullptr;
-    view.write_columns.push_back(field ? field->field_name() : "");
+    ViewWriteColumn source;
+    if (field != nullptr && find_table(field->field().table()->name())) {
+      source = {field->field_name(), field->field().table()->name(), field->table_name()};
+    }
+    view.write_columns.emplace_back(std::move(source));
     AttrType type = expression->value_type();
     if (type == AttrType::UNDEFINED || type == AttrType::NULLS) {
       type = AttrType::CHARS;
@@ -110,11 +112,19 @@ RC Db::create_view(const CreateViewSqlNode &request)
     item["name"] = column_name;
     item["type"] = attr_type_to_string(type);
     item["length"] = static_cast<Json::UInt>(length);
-    item["source"] = view.write_columns.back();
     fields.append(std::move(item));
   }
-  if (updatable) {
-    view.write_table = select->tables()[0]->name();
+  if (updatable && select->tables().size() == 1 && find_table(select->tables().front()->name())) {
+    view.write_table = select->tables().front()->name();
+  }
+  for (Json::ArrayIndex i = 0; i < fields.size(); ++i) {
+    auto &source = view.write_columns[i];
+    if (!updatable) {
+      source = {};
+    }
+    fields[i]["source"] = source.name;
+    fields[i]["source_table"] = source.table;
+    fields[i]["source_qualifier"] = source.qualifier;
   }
   auto schema = make_unique<Table>();
   rc = schema->init_view_schema(this, request.name, columns);
@@ -145,14 +155,83 @@ RC Db::create_view(const CreateViewSqlNode &request)
   return RC::SUCCESS;
 }
 
-string Db::view_write_column(const ViewDefinition &view, const string &exposed) const
+const ViewWriteColumn *Db::view_write_source(const ViewDefinition &view, const string &exposed) const
 {
   for (int i = 0; i < view.schema->table_meta().field_num(); ++i) {
-    if (exposed == view.schema->table_meta().field(i)->name()) {
-      return view.write_columns[i];
+    const auto &source = view.write_columns[i];
+    if (!source.table.empty() &&
+        strcasecmp(exposed.c_str(), view.schema->table_meta().field(i)->name()) == 0) {
+      return &source;
     }
   }
-  return {};
+  return nullptr;
+}
+
+string Db::view_write_column(const ViewDefinition &view, const string &exposed) const
+{
+  const auto *source = view_write_source(view, exposed);
+  return source == nullptr ? string{} : source->name;
+}
+
+RC Db::joined_view_write_condition(const ViewDefinition &view, const ViewWriteColumn &target, const string &outer,
+    const vector<ConditionSqlNode> &given, vector<ConditionSqlNode> &combined)
+{
+  Table *table = find_table(target.table.c_str());
+  if (table == nullptr) {
+    return RC::SCHEMA_TABLE_NOT_EXIST;
+  }
+  const auto &meta = table->table_meta();
+  auto subquery = make_unique<SubqueryExpr>(view.query);
+  auto &identity = subquery->additional_conditions();
+  for (int i = meta.sys_field_num(); i < meta.field_num(); ++i) {
+    const FieldMeta *field = meta.field(i);
+    ConditionSqlNode term{};
+    term.comp = NULL_SAFE_EQUAL;
+    term.left_expression = make_unique<UnboundFieldExpr>(target.qualifier, field->name());
+    term.right_expression = make_unique<UnboundFieldExpr>(outer, field->name());
+    identity.emplace_back(std::move(term));
+  }
+
+  std::function<RC(unique_ptr<Expression> &)> map_field = [&](unique_ptr<Expression> &expression) {
+    if (expression->type() != ExprType::UNBOUND_FIELD) {
+      return ExpressionIterator::iterate_child_expr(*expression, map_field);
+    }
+    const auto &column = static_cast<const UnboundFieldExpr &>(*expression);
+    if (*column.table_name() != '\0' && strcasecmp(column.table_name(), view.schema->name()) != 0) {
+      return RC::SCHEMA_TABLE_NOT_EXIST;
+    }
+    const auto *source = view_write_source(view, column.field_name());
+    if (source == nullptr) {
+      return RC::SCHEMA_FIELD_NOT_EXIST;
+    }
+    expression = make_unique<UnboundFieldExpr>(source->qualifier, source->name);
+    return RC::SUCCESS;
+  };
+  for (const auto &given_term : given) {
+    if (given_term.disjunctive) {
+      return RC::UNSUPPORTED;
+    }
+    auto left = given_term.left_expression->copy();
+    auto right = given_term.right_expression->copy();
+    RC rc = map_field(left);
+    if (OB_SUCC(rc)) {
+      rc = map_field(right);
+    }
+    if (OB_FAIL(rc)) {
+      return rc;
+    }
+    ConditionSqlNode term{};
+    term.comp = given_term.comp;
+    term.left_expression = std::move(left);
+    term.right_expression = std::move(right);
+    identity.emplace_back(std::move(term));
+  }
+  ConditionSqlNode condition{};
+  condition.comp = EXISTS_SUBQUERY;
+  condition.left_expression = make_unique<ValueExpr>(Value(true));
+  condition.right_expression = std::move(subquery);
+  combined.emplace_back(std::move(condition));
+  return RC::SUCCESS;
 }
 
 RC Db::view_write_conditions(const ViewDefinition &view, const vector<ConditionSqlNode> &given,
@@ -251,7 +330,13 @@ RC Db::open_views()
     for (const auto &field : json["fields"]) {
       columns.push_back({attr_type_from_string(field["type"].asCString()), field["name"].asString(),
           field["length"].asUInt(), true, true});
-      view.write_columns.push_back(field["source"].asString());
+      ViewWriteColumn source{field["source"].asString(), field["source_table"].asString(),
+          field["source_qualifier"].asString()};
+      if (!field.isMember("source_table") && !source.name.empty() && !view.write_table.empty()) {
+        source.table = view.write_table;
+        source.qualifier = view.write_table;
+      }
+      view.write_columns.emplace_back(std::move(source));
     }
     auto table = make_unique<Table>();
     RC rc = table->init_view_schema(this, name, columns);
