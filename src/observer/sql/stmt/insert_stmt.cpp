@@ -10,6 +10,7 @@ See the Mulan PSL v2 for more details. */
 
 #include "sql/stmt/insert_stmt.h"
 
+#include <algorithm>
 #include <unordered_set>
 
 #include "storage/db/db.h"
@@ -27,6 +28,10 @@ RC InsertStmt::create(Db *db, const InsertSqlNode &insert, Stmt *&stmt)
   vector<string> provided = insert.columns;
   const ViewDefinition *view = db->find_view(insert.relation_name);
   if (view != nullptr) {
+    if (std::any_of(view->write_columns.begin(), view->write_columns.end(),
+          [](const ViewWriteColumn &column) { return column.table.empty(); })) {
+      return RC::UNSUPPORTED;
+    }
     if (provided.empty()) {
       for (int i = 0; i < view->schema->table_meta().field_num(); ++i) {
         provided.emplace_back(view->schema->table_meta().field(i)->name());

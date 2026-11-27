@@ -132,7 +132,6 @@ UnboundAggregateExpr *create_aggregate_expression(const char *aggregate_name,
         JOIN
         DATE_T
         LOAD
-        DATA
         INFILE
         EXPLAIN
         STORAGE
@@ -189,7 +188,8 @@ UnboundAggregateExpr *create_aggregate_expression(const char *aggregate_name,
 
 %token <number> NUMBER
 %token <floats> FLOAT
-%token <cstring> ID
+%token <cstring> ID DATA
+%type  <cstring> identifier
 %token <cstring> SSS
 //非终结符
 
@@ -319,13 +319,13 @@ rollback_stmt:
     ;
 
 drop_table_stmt:    /*drop table 语句的语法解析树*/
-    DROP TABLE ID {
+    DROP TABLE identifier {
       $$ = new ParsedSqlNode(SCF_DROP_TABLE);
       $$->drop_table.relation_name = $3;
     };
 
 analyze_table_stmt:  /* analyze table 语法的语法解析树*/
-    ANALYZE TABLE ID {
+    ANALYZE TABLE identifier {
       $$ = new ParsedSqlNode(SCF_ANALYZE_TABLE);
       $$->analyze_table.relation_name = $3;
     }
@@ -338,14 +338,14 @@ show_tables_stmt:
     ;
 
 desc_table_stmt:
-    DESC ID  {
+    DESC identifier  {
       $$ = new ParsedSqlNode(SCF_DESC_TABLE);
       $$->desc_table.relation_name = $2;
     }
     ;
 
 create_index_stmt:
-    CREATE index_unique INDEX ID ON ID LBRACE attr_list RBRACE {
+    CREATE index_unique INDEX identifier ON identifier LBRACE attr_list RBRACE {
       $$ = new ParsedSqlNode(SCF_CREATE_INDEX);
       auto &index = $$->create_index;
       index.unique = $2;
@@ -354,7 +354,7 @@ create_index_stmt:
       index.attributes.swap(*$8);
       delete $8;
     }
-    | ALTER TABLE ID ADD FULLTEXT INDEX ID LBRACE ID RBRACE WITH PARSER ID {
+    | ALTER TABLE identifier ADD FULLTEXT INDEX identifier LBRACE identifier RBRACE WITH PARSER identifier {
       if (strcasecmp($13, "JIEBA") != 0) {
         yyerror(&@$, sql_string, sql_result, scanner, "unsupported fulltext parser");
         YYERROR;
@@ -373,7 +373,7 @@ index_unique:
     ;
 
 drop_index_stmt:      /*drop index 语句的语法解析树*/
-    DROP INDEX ID ON ID
+    DROP INDEX identifier ON identifier
     {
       $$ = new ParsedSqlNode(SCF_DROP_INDEX);
       $$->drop_index.index_name = $3;
@@ -381,7 +381,7 @@ drop_index_stmt:      /*drop index 语句的语法解析树*/
     }
     ;
 create_table_stmt:    /*create table 语句的语法解析树*/
-    CREATE TABLE ID LBRACE attr_def_list primary_key RBRACE storage_format
+    CREATE TABLE identifier LBRACE attr_def_list primary_key RBRACE storage_format
     {
       $$ = new ParsedSqlNode(SCF_CREATE_TABLE);
       CreateTableSqlNode &create_table = $$->create_table;
@@ -402,20 +402,20 @@ create_table_stmt:    /*create table 语句的语法解析树*/
     ;
     
 alter_table_stmt:
-    ALTER TABLE ID ADD COLUMN attr_def {
+    ALTER TABLE identifier ADD COLUMN attr_def {
       $$ = new ParsedSqlNode(SCF_ALTER_TABLE);
       $$->alter_table.operation = AlterTableSqlNode::Operation::ADD;
       $$->alter_table.table_name = $3;
       $$->alter_table.column = std::move(*$6);
       delete $6;
     }
-    | ALTER TABLE ID DROP COLUMN ID {
+    | ALTER TABLE identifier DROP COLUMN identifier {
       $$ = new ParsedSqlNode(SCF_ALTER_TABLE);
       $$->alter_table.operation = AlterTableSqlNode::Operation::DROP;
       $$->alter_table.table_name = $3;
       $$->alter_table.old_column = $6;
     }
-    | ALTER TABLE ID CHANGE COLUMN ID attr_def {
+    | ALTER TABLE identifier CHANGE COLUMN identifier attr_def {
       $$ = new ParsedSqlNode(SCF_ALTER_TABLE);
       $$->alter_table.operation = AlterTableSqlNode::Operation::CHANGE;
       $$->alter_table.table_name = $3;
@@ -423,7 +423,7 @@ alter_table_stmt:
       $$->alter_table.column = std::move(*$7);
       delete $7;
     }
-    | ALTER TABLE ID RENAME TO ID {
+    | ALTER TABLE identifier RENAME TO identifier {
       $$ = new ParsedSqlNode(SCF_ALTER_TABLE);
       $$->alter_table.operation = AlterTableSqlNode::Operation::RENAME;
       $$->alter_table.table_name = $3;
@@ -431,13 +431,13 @@ alter_table_stmt:
     }
     ;
 create_view_stmt:
-    CREATE VIEW ID AS select_stmt {
+    CREATE VIEW identifier AS select_stmt {
       $$ = new ParsedSqlNode(SCF_CREATE_VIEW);
       $$->create_view.name = $3;
       $$->create_view.query = token_name(sql_string, &@5);
       delete $5;
     }
-    | CREATE VIEW ID LBRACE attr_list RBRACE AS select_stmt {
+    | CREATE VIEW identifier LBRACE attr_list RBRACE AS select_stmt {
       $$ = new ParsedSqlNode(SCF_CREATE_VIEW);
       $$->create_view.name = $3;
       $$->create_view.columns.swap(*$5);
@@ -447,7 +447,7 @@ create_view_stmt:
     }
     ;
 drop_view_stmt:
-    DROP VIEW ID {
+    DROP VIEW identifier {
       $$ = new ParsedSqlNode(SCF_DROP_VIEW);
       $$->create_view.name = $3;
     }
@@ -468,7 +468,7 @@ attr_def_list:
     ;
     
 attr_def:
-    ID type LBRACE number RBRACE nullability
+    identifier type LBRACE number RBRACE nullability
     {
       $$ = new AttrInfoSqlNode;
       $$->type = (AttrType)$2;
@@ -477,7 +477,7 @@ attr_def:
       $$->nullable = $6 != 2;
       $$->nullable_explicit = $6 != 0;
     }
-    | ID type nullability
+    | identifier type nullability
     {
       $$ = new AttrInfoSqlNode;
       $$->type = (AttrType)$2;
@@ -515,11 +515,11 @@ primary_key:
     ;
 
 attr_list:
-    ID {
+    identifier {
       $$ = new vector<string>();
       $$->push_back($1);
     }
-    | ID COMMA attr_list {
+    | identifier COMMA attr_list {
       if ($3 != nullptr) {
         $$ = $3;
       } else {
@@ -531,14 +531,14 @@ attr_list:
     ;
 
 insert_stmt:        /*insert   语句的语法解析树*/
-    INSERT INTO ID VALUES LBRACE value_list RBRACE 
+    INSERT INTO identifier VALUES LBRACE value_list RBRACE
     {
       $$ = new ParsedSqlNode(SCF_INSERT);
       $$->insertion.relation_name = $3;
       $$->insertion.values.swap(*$6);
       delete $6;
     }
-    | INSERT INTO ID LBRACE attr_list RBRACE VALUES LBRACE value_list RBRACE {
+    | INSERT INTO identifier LBRACE attr_list RBRACE VALUES LBRACE value_list RBRACE {
       $$ = new ParsedSqlNode(SCF_INSERT);
       $$->insertion.relation_name = $3;
       $$->insertion.columns.swap(*$5);
@@ -567,7 +567,7 @@ signed_value:
     | '-' FLOAT { $$ = new Value(-$2); }
     | '+' NUMBER { $$ = new Value($2); }
     | '+' FLOAT { $$ = new Value($2); }
-    | ID LBRACE value RBRACE {
+    | identifier LBRACE value RBRACE {
       unique_ptr<Value> argument($3);
       auto result = make_unique<Value>();
       if ((strcasecmp($1, "STRING_TO_VECTOR") != 0 && strcasecmp($1, "TO_VECTOR") != 0) ||
@@ -599,14 +599,14 @@ storage_format:
     {
       $$ = nullptr;
     }
-    | STORAGE FORMAT EQ ID
+    | STORAGE FORMAT EQ identifier
     {
       $$ = $4;
     }
     ;
     
 delete_stmt:    /*  delete 语句的语法解析树*/
-    DELETE FROM ID where 
+    DELETE FROM identifier where
     {
       $$ = new ParsedSqlNode(SCF_DELETE);
       $$->deletion.relation_name = $3;
@@ -617,7 +617,7 @@ delete_stmt:    /*  delete 语句的语法解析树*/
     }
     ;
 update_stmt:
-    UPDATE ID SET assignments where {
+    UPDATE identifier SET assignments where {
       $$ = new ParsedSqlNode(SCF_UPDATE);
       $$->update.relation_name = $2;
       $$->update.assignments.swap(*$4);
@@ -629,11 +629,11 @@ update_stmt:
     }
     ;
 assignments:
-    ID EQ expression {
+    identifier EQ expression {
       $$ = new vector<UpdateAssignmentSqlNode>;
       $$->push_back({$1, unique_ptr<Expression>($3)});
     }
-    | assignments COMMA ID EQ expression {
+    | assignments COMMA identifier EQ expression {
       $$ = $1;
       $$->push_back({$3, unique_ptr<Expression>($5)});
     }
@@ -715,11 +715,11 @@ select_list:
     ;
 select_expression:
     expression { $$ = $1; }
-    | expression AS ID {
+    | expression AS identifier {
       $$ = $1;
       $$->set_alias($3);
     }
-    | expression ID {
+    | expression identifier {
       $$ = $1;
       $$->set_alias($2);
     }
@@ -764,7 +764,7 @@ expression:
     | '*' {
       $$ = new StarExpr();
     }
-    | ID DOT '*' {
+    | identifier DOT '*' {
       $$ = new StarExpr($1);
     }
     | value {
@@ -791,11 +791,11 @@ expression:
     ;
 
 aggregate_expression:
-    ID LBRACE RBRACE {
+    identifier LBRACE RBRACE {
       $$ = new ScalarFunctionExpr($1, {});
       $$->set_name(token_name(sql_string, &@$));
     }
-    | ID LBRACE expression_list RBRACE {
+    | identifier LBRACE expression_list RBRACE {
       if (ScalarFunctionExpr::supports($1)) {
         $$ = new ScalarFunctionExpr($1, std::move(*$3));
         $$->set_name(token_name(sql_string, &@$));
@@ -810,11 +810,11 @@ aggregate_expression:
     ;
 
 rel_attr:
-    ID {
+    identifier {
       $$ = new RelAttrSqlNode;
       $$->attribute_name = $1;
     }
-    | ID DOT ID {
+    | identifier DOT identifier {
       $$ = new RelAttrSqlNode;
       $$->relation_name  = $1;
       $$->attribute_name = $3;
@@ -822,9 +822,9 @@ rel_attr:
     ;
 
 relation:
-    ID { $$ = new RelationSqlNode{$1, {}}; }
-    | ID AS ID { $$ = new RelationSqlNode{$1, $3}; }
-    | ID ID { $$ = new RelationSqlNode{$1, $2}; }
+    identifier { $$ = new RelationSqlNode{$1, {}}; }
+    | identifier AS identifier { $$ = new RelationSqlNode{$1, $3}; }
+    | identifier identifier { $$ = new RelationSqlNode{$1, $2}; }
     ;
 rel_list:
     relation {
@@ -999,7 +999,7 @@ limit_clause:
     | LIMIT NUMBER { $$ = $2; }
     ;
 load_data_stmt:
-    LOAD DATA INFILE SSS INTO TABLE ID fields_terminated_by enclosed_by
+    LOAD DATA INFILE SSS INTO TABLE identifier fields_terminated_by enclosed_by
     {
       char *tmp_file_name = common::substr($4, 1, strlen($4) - 2);
       
@@ -1049,7 +1049,7 @@ explain_stmt:
     ;
 
 set_variable_stmt:
-    SET ID EQ value
+    SET identifier EQ value
     {
       $$ = new ParsedSqlNode(SCF_SET_VARIABLE);
       $$->set_variable.name  = $2;
@@ -1061,6 +1061,12 @@ set_variable_stmt:
 opt_semicolon: /*empty*/
     | SEMICOLON
     ;
+
+identifier:
+    ID { $$ = $1; }
+    | DATA { $$ = $1; }
+    ;
+
 %%
 //_____________________________________________________________________
 extern void scan_string(const char *str, yyscan_t scanner);

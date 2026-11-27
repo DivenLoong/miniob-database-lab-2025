@@ -10,6 +10,7 @@ See the Mulan PSL v2 for more details. */
 
 #include "storage/db/db.h"
 
+#include <algorithm>
 #include <fstream>
 #include <unordered_set>
 
@@ -85,6 +86,13 @@ RC Db::create_view(const CreateViewSqlNode &request)
   vector<AttrInfoSqlNode> columns;
   std::unordered_set<string> names;
   Json::Value fields(Json::arrayValue);
+  function<RC(Expression &)> check_aggregate = [&](Expression &expression) -> RC {
+    if (expression.type() == ExprType::AGGREGATION) {
+      return RC::UNSUPPORTED;
+    }
+    return ExpressionIterator::iterate_child_expr(expression,
+        [&](unique_ptr<Expression> &child) { return check_aggregate(*child); });
+  };
   for (size_t i = 0; i < expressions.size(); ++i) {
     const auto &expression = expressions[i];
     const auto *field = expression->type() == ExprType::FIELD ? static_cast<const FieldExpr *>(expression.get()) : nullptr;
@@ -93,7 +101,7 @@ RC Db::create_view(const CreateViewSqlNode &request)
     if (column_name.empty() || !names.insert(column_name).second) {
       return RC::INVALID_ARGUMENT;
     }
-    updatable = updatable && field != nullptr;
+    updatable = updatable && OB_SUCC(check_aggregate(*expression));
     ViewWriteColumn source;
     if (field != nullptr && find_table(field->field().table()->name())) {
       source = {field->field_name(), field->field().table()->name(), field->table_name()};
@@ -114,7 +122,9 @@ RC Db::create_view(const CreateViewSqlNode &request)
     item["length"] = static_cast<Json::UInt>(length);
     fields.append(std::move(item));
   }
-  if (updatable && select->tables().size() == 1 && find_table(select->tables().front()->name())) {
+  const bool has_direct_column = std::any_of(view.write_columns.begin(), view.write_columns.end(),
+      [](const ViewWriteColumn &column) { return !column.table.empty(); });
+  if (updatable && has_direct_column && select->tables().size() == 1 && find_table(select->tables().front()->name())) {
     view.write_table = select->tables().front()->name();
   }
   for (Json::ArrayIndex i = 0; i < fields.size(); ++i) {
@@ -239,6 +249,7 @@ RC Db::view_write_conditions(const ViewDefinition &view, const vector<ConditionS
     return RC::SQL_SYNTAX;
   }
 
+  unique_ptr<Stmt> prepared;
   const auto rewrite = [&](const vector<ConditionSqlNode> &conditions, bool mapped) {
     std::function<RC(unique_ptr<Expression> &)> visit = [&](unique_ptr<Expression> &expression) {
       if (expression->type() == ExprType::UNBOUND_FIELD) {
@@ -248,7 +259,27 @@ RC Db::view_write_conditions(const ViewDefinition &view, const vector<ConditionS
         }
         const string name = mapped ? view_write_column(view, original.field_name()) : original.field_name();
         if (name.empty()) {
-          return RC::SCHEMA_FIELD_NOT_EXIST;
+          const auto &schema = view.schema->table_meta();
+          const FieldMeta *column = schema.field(original.field_name());
+          if (column == nullptr) {
+            return RC::SCHEMA_FIELD_NOT_EXIST;
+          }
+          if (!prepared) {
+            RC rc = prepare_view_query(view.query, prepared);
+            if (OB_FAIL(rc)) {
+              return rc;
+            }
+          }
+          const auto &projection = static_cast<SelectStmt &>(*prepared).query_expressions();
+          expression = projection[column->field_id()]->copy();
+          function<RC(unique_ptr<Expression> &)> bind_base = [&](unique_ptr<Expression> &child) {
+            if (child->type() == ExprType::FIELD) {
+              static_cast<FieldExpr &>(*child).set_qualifier(view.write_table);
+              return RC::SUCCESS;
+            }
+            return ExpressionIterator::iterate_child_expr(*child, bind_base);
+          };
+          return bind_base(expression);
         }
         expression = make_unique<UnboundFieldExpr>(view.write_table, name);
         return RC::SUCCESS;
